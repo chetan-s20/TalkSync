@@ -1,0 +1,34 @@
+# Secrets / environment
+.env
+.env.*
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+venv*/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Logs & runtime artifacts
+logs/
+*.log
+stdout.txt
+stderr.txt
+pipeline_out.txt
+pipeline_err.txt
+install_log.txt
+
+# History DB
+history/talksync_history.db
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

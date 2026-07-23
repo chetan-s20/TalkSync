@@ -1,0 +1,22 @@
+{
+    "stt": {
+        "model": "Systran/faster-whisper-small",
+        "beam_size": 2
+    },
+    "translation": {
+        "primary": "argos",
+        "fallback": "deepl",
+        "argos_model": "en_hi"
+    },
+    "tts": {
+        "piper_voice": "en_US-lessac-medium",
+        "sarvam_voice": "shubh",
+        "sarvam_lang": "hi-IN",
+        "output_sample_rate": 24000
+    },
+    "vad": {
+        "threshold": 0.6,
+        "min_speech_duration_ms": 250,
+        "min_silence_duration_ms": 550
+    }
+}
