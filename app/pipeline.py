@@ -129,12 +129,7 @@ class Pipeline:
 
         try:
             if self.on_status:
-                self.on_status("Starting audio...", "processing")
-            should_capture = loopback or not text_mode
-            if should_capture:
-                await self._audio_input.start(loopback=loopback, capture_mic=not text_mode)
-            if not self.running:
-                return
+                self.on_status("Starting services...", "processing")
 
             for svc_name, svc in [("VAD", self._vad), ("STT", self._stt), ("Translator", self._translator), ("TTS", self._tts)]:
                 if self.on_status:
@@ -153,7 +148,7 @@ class Pipeline:
                 )
                 # Reverse direction warmup
                 await asyncio.wait_for(
-                    self._translator.translate("वार्म अप", self._target_lang, self._source_lang),
+                    self._translator.translate("नमस्ते रूप", self._target_lang, self._source_lang),
                     timeout=15.0,
                 )
             except Exception:
@@ -162,6 +157,16 @@ class Pipeline:
             if self.on_status:
                 self.on_status("Opening audio output...", "processing")
             await self._audio_output.start()
+
+            # Start audio capture input AFTER models are fully loaded and warmed up!
+            # This ensures latency benchmarks don't include model loading and warm up times!
+            should_capture = loopback or not text_mode
+            if should_capture:
+                if self.on_status:
+                    self.on_status("Starting audio input...", "processing")
+                await self._audio_input.start(loopback=loopback, capture_mic=not text_mode)
+                if not self.running:
+                    return
 
             if self.on_status:
                 self.on_status("Listening...", "listening")
@@ -365,7 +370,13 @@ class Pipeline:
                     self.on_status("Transcribing..." if job.is_final else "Processing...", "processing")
 
                 try:
-                    result = await self._stt.transcribe(job.audio, is_final=job.is_final)
+                    # Explicitly route the correct expected language based on the input source to bypass language misdetection
+                    lang_code = self._target_lang if job.source == "loopback" else self._source_lang
+                    if lang_code:
+                        lang_code = lang_code.lower()
+                        if lang_code in ("auto", "automatic"):
+                            lang_code = None
+                    result = await self._stt.transcribe(job.audio, is_final=job.is_final, language=lang_code)
                 except Exception as e:
                     logger.error(f"STT error [{job.source}]: {e}")
                     continue
@@ -375,6 +386,17 @@ class Pipeline:
                 text = (result.text or "").strip()
                 logger.info(f"[DIAG] STT [{job.source}]: text='{text[:80]}', lang={result.language}, final={job.is_final}, confidence={result.confidence:.3f}")
                 if not text:
+                    continue
+
+                # Translation gate: confidence filter
+                if result.confidence < 0.4:
+                    logger.debug(f"[DIAG] STT: low confidence ({result.confidence:.3f}) — dropping '{text[:60]}'")
+                    continue
+
+                # Translation gate: minimum word count
+                words = text.split()
+                if len(words) < 2:
+                    logger.debug(f"[DIAG] STT: too few words ({len(words)}) — dropping '{text[:60]}'")
                     continue
 
                 input_src = "COMPUTER_AUDIO" if job.source == "loopback" else "VOICE"

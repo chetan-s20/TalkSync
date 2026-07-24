@@ -6,9 +6,9 @@ from typing import Optional
 
 import numpy as np
 
-SPEECH_FRAMES_TO_ACTIVATE = 2  # Reduced from 3 for faster activation (~30ms improvement)
-SILENCE_FRAMES_TO_DEACTIVATE = 5
-MIN_SPEECH_SAMPLES = 1200  # Reduced from 1600 for faster initial response (~25ms improvement)
+SPEECH_FRAMES_TO_ACTIVATE = 2
+SILENCE_FRAMES_TO_DEACTIVATE = 8
+MIN_SPEECH_SAMPLES = 4000  # 250ms at 16kHz — balances latency & hallucination reduction
 
 
 class SpeechTracker:

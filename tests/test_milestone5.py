@@ -334,7 +334,7 @@ class TestTier5Adversarial:
         audio_output = AsyncMock()
 
         stt.transcribe.return_value = TranscriptionSegment(
-            text="hello", is_final=True, start_time=datetime.now(),
+            text="hello world", is_final=True, start_time=datetime.now(),
             end_time=datetime.now(), language="en", confidence=0.9,
         )
 

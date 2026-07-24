@@ -12,6 +12,9 @@ from utils.logger import get_logger
 
 logger = get_logger("vad")
 
+# Default RMS noise floor — rejects silent chunks before VAD
+RMS_GATE_THRESHOLD = 0.005
+
 
 class VADSpeechOutcome(tuple):
     """Tuple subclass representing (is_speech: bool, confidence: float) that also behaves cleanly as boolean."""
@@ -98,7 +101,7 @@ class SileroVAD(BaseVAD):
         audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
         rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-        NOISE_FLOOR_RMS = 0.005
+        NOISE_FLOOR_RMS = RMS_GATE_THRESHOLD
 
         # Fallback heuristic mode if Silero VAD model is not loaded
         if self._model is None:
@@ -106,11 +109,11 @@ class SileroVAD(BaseVAD):
             prob = 0.8 if is_sp else 0.2
             return VADSpeechOutcome(is_sp, prob)
 
-        # 1. Noise floor gate check: RMS < 0.005 mutes silent static intervals
+        # 1. Noise floor gate check: RMS < threshold mutes silent static intervals
         if rms < NOISE_FLOOR_RMS:
             return VADSpeechOutcome(False, 0.0)
 
-        threshold = getattr(self.settings, "threshold", 0.55)
+        threshold = getattr(self.settings, "threshold", 0.5)
 
         # 2. 512-sample frame iterator / sliding window for chunk sizes > 512
         chunk_len = len(audio)

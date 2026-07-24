@@ -27,6 +27,11 @@ class AIAssistantDialog(ctk.CTkToplevel):
 
         self._build_ui()
         self.update_idletasks()
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(self, "mica")
+        except Exception:
+            pass
 
     def _build_ui(self) -> None:
         main_frame = ctk.CTkFrame(self, fg_color="transparent")

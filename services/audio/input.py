@@ -249,41 +249,38 @@ class SoundDeviceInput(BaseAudioInput):
             dev_info = sd.query_devices(dev_id)
         except Exception as e:
             self._running = False
-            err_msg = f"Loopback device {dev_id} ({desc}) not available: {e}"
-            self._device_init_errors.append(err_msg)
-            raise RuntimeError(err_msg)
+            raise RuntimeError(f"Loopback device {dev_id} ({desc}) not available: {e}")
 
-        native_sr = int(dev_info["default_samplerate"]) if dev_info.get("default_samplerate") else self.settings.sample_rate
-        native_ch = max(1, int(dev_info.get("max_input_channels", 1)))
-        cb = self._make_callback(native_sr, source="loopback")
+        native_sr = int(dev_info.get("default_samplerate", 44100))
+        native_ch = max(1, dev_info.get("max_input_channels", 2))
 
-        # Try WASAPI host first, fall back to default
+        # Try target sample rate first, fall back to native sample rate
+        sample_rates = [self.settings.sample_rate, native_sr]
+
         last_err = None
-        wasapi_options = [("WASAPI", sd.WasapiSettings(exclusive=False)), ("default", None)]
-        try:
-            sd.WasapiSettings
-        except AttributeError:
-            wasapi_options = [("default", None)]
+        for sr in sample_rates:
+            cb = self._make_callback(sr, source="loopback")
+            wasapi_options = [("WASAPI", sd.WasapiSettings(exclusive=False)), ("default", None)]
+            try:
+                sd.WasapiSettings
+            except AttributeError:
+                wasapi_options = [("default", None)]
 
-        for host_label, extra in wasapi_options:
-            for ch in (min(native_ch, 2), 1):
+            for host_label, extra in wasapi_options:
                 try:
                     self._loopback_stream = sd.InputStream(
-                        samplerate=native_sr, channels=ch,
+                        samplerate=sr, channels=min(native_ch, 2),
                         dtype="float32",
-                        blocksize=int(native_sr * self.settings.chunk_duration_ms / 1000),
+                        blocksize=int(sr * self.settings.chunk_duration_ms / 1000),
                         callback=cb, device=dev_id,
                         extra_settings=extra,
                     )
                     self._loopback_stream.start()
-                    logger.info(f"Loopback (sounddevice) started via {desc} (device {dev_id}, ch={ch}, host={host_label})")
-                    last_err = None
-                    break
+                    logger.info(f"Loopback (sounddevice) started via {desc} (device {dev_id}, rate={sr}, host={host_label})")
+                    return
                 except Exception as e:
                     last_err = e
-                    logger.debug(f"Loopback via {host_label} ch={ch} failed: {e}")
-            if last_err is None:
-                break
+                    logger.debug(f"Loopback via {host_label} at {sr}Hz failed: {e}")
 
         if last_err is not None:
             self._running = False
@@ -293,16 +290,20 @@ class SoundDeviceInput(BaseAudioInput):
 
     async def _start_mic(self, device_id: Optional[int]) -> None:
         candidates = []
-        if device_id is not None:
-            try:
-                dev_info = sd.query_devices(device_id)
-                native_sr = int(dev_info["default_samplerate"]) if dev_info.get("default_samplerate") else self.settings.sample_rate
-                native_ch = max(1, int(dev_info.get("max_input_channels", 1)))
-                candidates.append((device_id, native_sr, min(native_ch, self.settings.channels)))
-                candidates.append((device_id, native_sr, 1))
-                candidates.append((device_id, self.settings.sample_rate, 1))
-            except Exception as e:
-                self._device_init_errors.append(f"Query specified mic device {device_id} failed: {e}")
+        try:
+            dev_info = sd.query_devices(device_id)
+            native_sr = int(dev_info["default_samplerate"]) if dev_info.get("default_samplerate") else self.settings.sample_rate
+            native_ch = int(dev_info.get("max_input_channels", 1))
+            if native_ch < 1:
+                native_ch = 1
+            
+            # Prioritize target rate (e.g. 16kHz) to avoid linear resampler artifacts entirely!
+            candidates.append((device_id, self.settings.sample_rate, min(native_ch, self.settings.channels)))
+            # Fallback to default card rate
+            candidates.append((device_id, native_sr, min(native_ch, self.settings.channels)))
+            candidates.append((device_id, native_sr, 1))
+        except Exception:
+            pass
 
         # Fallback candidates
         candidates.append((None, self.settings.sample_rate, self.settings.channels))

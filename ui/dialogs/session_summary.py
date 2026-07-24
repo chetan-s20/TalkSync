@@ -23,6 +23,11 @@ class SessionSummaryDialog(ctk.CTkToplevel):
 
         self._build_ui(blocks)
         self.update_idletasks()
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(self, "mica")
+        except Exception:
+            pass
 
     def _build_ui(self, blocks: list[dict]) -> None:
         main = ctk.CTkFrame(self, fg_color="transparent")

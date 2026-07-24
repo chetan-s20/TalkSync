@@ -30,6 +30,11 @@ class AudioSettingsPopup(ctk.CTkToplevel):
 
         self._build_ui()
         self.update_idletasks()
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(self, "mica")
+        except Exception:
+            pass
 
     def _build_ui(self) -> None:
         main_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -186,13 +191,21 @@ class AudioSettingsPopup(ctk.CTkToplevel):
         vmic_head = ctk.CTkFrame(vmic_box, fg_color="transparent")
         vmic_head.pack(fill="x", padx=12, pady=(8, 2))
 
-        lbl_vmic_title = ctk.CTkLabel(
+        self.vmic_var = ctk.BooleanVar(value=False)
+        if self.settings and hasattr(self.settings, "audio"):
+            self.vmic_var.set(self.settings.audio.virtual_mic_enabled)
+
+        self.chk_vmic = ctk.CTkCheckBox(
             vmic_head,
             text="Virtual Microphone",
+            variable=self.vmic_var,
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
             text_color=TEXT_PRIMARY,
+            fg_color=ACCENT_ORANGE,
+            hover_color="#E54D1F",
+            command=self._on_changed,
         )
-        lbl_vmic_title.pack(side="left")
+        self.chk_vmic.pack(side="left")
 
         lbl_view = ctk.CTkLabel(
             vmic_head,
@@ -269,6 +282,7 @@ class AudioSettingsPopup(ctk.CTkToplevel):
             if hasattr(self.settings, "audio"):
                 self.settings.audio.input_device_id = input_id
                 self.settings.audio.output_device_id = output_id
+                self.settings.audio.virtual_mic_enabled = self.vmic_var.get()
 
         if self.on_update_callback:
             self.on_update_callback(

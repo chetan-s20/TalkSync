@@ -99,7 +99,7 @@ class TestFasterWhisperSTT:
             mock_model.return_value = mock_instance
 
             mock_segment = MagicMock()
-            mock_segment.text = "नमस्ते"
+            mock_segment.text = "नमस्ते दुनिया"
             mock_segment.start = 0.0
             mock_segment.end = 0.5
             mock_segment.avg_logprob = -0.1
@@ -183,21 +183,21 @@ class TestFasterWhisperSTT:
             mock_instance = MagicMock()
             mock_model.return_value = mock_instance
             stt = FasterWhisperSTT(model_name="Systran/faster-whisper-small")
-            assert stt.no_speech_threshold == 0.55
+            assert stt.no_speech_threshold == 0.75
 
     def test_stt_compression_ratio_threshold(self):
         with patch("faster_whisper.WhisperModel") as mock_model:
             mock_instance = MagicMock()
             mock_model.return_value = mock_instance
             stt = FasterWhisperSTT(model_name="Systran/faster-whisper-small")
-            assert stt.compression_ratio_threshold == 2.4
+            assert stt.compression_ratio_threshold == 2.0
 
     def test_stt_log_prob_threshold(self):
         with patch("faster_whisper.WhisperModel") as mock_model:
             mock_instance = MagicMock()
             mock_model.return_value = mock_instance
             stt = FasterWhisperSTT(model_name="Systran/faster-whisper-small")
-            assert stt.log_prob_threshold == -0.8
+            assert stt.log_prob_threshold == -1.0
 
 
 

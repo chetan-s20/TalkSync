@@ -21,11 +21,16 @@ class FasterWhisperSTT:
         model_name: Optional[str] = None,
         device: Optional[str] = None,
         beam_size: Optional[int] = None,
+        best_of: Optional[int] = None,
+        temperature: Optional[float] = None,
         vad_filter: Optional[bool] = None,
         no_speech_threshold: Optional[float] = None,
         compression_ratio_threshold: Optional[float] = None,
         log_prob_threshold: Optional[float] = None,
+        condition_on_previous_text: Optional[bool] = None,
         initial_prompt: Optional[str] = None,
+        rms_gate_threshold: Optional[float] = None,
+        min_word_count: Optional[int] = None,
         **kwargs,
     ):
         if settings is not None:
@@ -40,12 +45,17 @@ class FasterWhisperSTT:
         self.settings = stt_settings
         self._model_name = model_name or getattr(stt_settings, "model", "Systran/faster-whisper-small")
         self._device = device or getattr(stt_settings, "device", "cpu")
-        self._beam_size = beam_size if beam_size is not None else getattr(stt_settings, "beam_size", 1)
+        self._beam_size = beam_size if beam_size is not None else getattr(stt_settings, "beam_size", 5)
+        self._best_of = best_of if best_of is not None else getattr(stt_settings, "best_of", 5)
+        self._temperature = temperature if temperature is not None else getattr(stt_settings, "temperature", 0.0)
         self._vad_filter = vad_filter if vad_filter is not None else getattr(stt_settings, "vad_filter", False)
-        self._no_speech_threshold = no_speech_threshold if no_speech_threshold is not None else getattr(stt_settings, "no_speech_threshold", 0.7)
-        self._compression_ratio_threshold = compression_ratio_threshold if compression_ratio_threshold is not None else getattr(stt_settings, "compression_ratio_threshold", 2.4)
+        self._no_speech_threshold = no_speech_threshold if no_speech_threshold is not None else getattr(stt_settings, "no_speech_threshold", 0.75)
+        self._compression_ratio_threshold = compression_ratio_threshold if compression_ratio_threshold is not None else getattr(stt_settings, "compression_ratio_threshold", 2.0)
         self._log_prob_threshold = log_prob_threshold if log_prob_threshold is not None else getattr(stt_settings, "log_prob_threshold", -1.0)
+        self._condition_on_previous_text = condition_on_previous_text if condition_on_previous_text is not None else getattr(stt_settings, "condition_on_previous_text", False)
         self._initial_prompt = initial_prompt if initial_prompt is not None else getattr(stt_settings, "initial_prompt", None)
+        self._rms_gate_threshold = rms_gate_threshold if rms_gate_threshold is not None else getattr(stt_settings, "rms_gate_threshold", 0.002)
+        self._min_word_count = min_word_count if min_word_count is not None else getattr(stt_settings, "min_word_count", 2)
 
         self._model = None
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
@@ -86,6 +96,26 @@ class FasterWhisperSTT:
     @property
     def log_prob_threshold(self) -> float:
         return self._log_prob_threshold
+
+    @property
+    def condition_on_previous_text(self) -> bool:
+        return self._condition_on_previous_text
+
+    @property
+    def temperature(self) -> float:
+        return self._temperature
+
+    @property
+    def best_of(self) -> int:
+        return self._best_of
+
+    @property
+    def rms_gate_threshold(self) -> float:
+        return self._rms_gate_threshold
+
+    @property
+    def min_word_count(self) -> int:
+        return self._min_word_count
 
     async def start(self, language: Optional[str] = None) -> None:
         if isinstance(language, str) and language.strip().lower() in ("auto", "automatic"):
@@ -156,6 +186,12 @@ class FasterWhisperSTT:
         if isinstance(audio, bytes):
             audio = np.frombuffer(audio, dtype=np.float32).copy()
 
+        # 1. RMS Energy Gate: reject silent/low-energy audio before STT
+        rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        if rms < self._rms_gate_threshold:
+            logger.debug(f"STT: RMS gate triggered ({rms:.6f} < {self._rms_gate_threshold}) — rejecting silence")
+            return None
+
         def _get_result():
             if self._model is None:
                 return None
@@ -168,7 +204,10 @@ class FasterWhisperSTT:
                 segments_gen, info = self._model.transcribe(
                     audio,
                     beam_size=self._beam_size,
+                    best_of=self._best_of,
+                    temperature=self._temperature,
                     language=lang,
+                    condition_on_previous_text=self._condition_on_previous_text,
                     vad_filter=self._vad_filter,
                     no_speech_threshold=self._no_speech_threshold,
                     log_prob_threshold=self._log_prob_threshold,
@@ -195,6 +234,12 @@ class FasterWhisperSTT:
                         max_logprob = avg_lp
                 text = " ".join(text_parts).strip()
                 if not text:
+                    return None
+
+                # 2. Minimum word count filter: reject single-word hallucinations
+                words = text.split()
+                if len(words) < self._min_word_count:
+                    logger.debug(f"STT: min word count filter triggered ({len(words)} < {self._min_word_count}) — rejecting '{text[:60]}'")
                     return None
 
                 detected_lang = getattr(info, "language", "") or ""

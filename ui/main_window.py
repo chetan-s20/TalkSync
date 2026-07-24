@@ -62,12 +62,20 @@ class MainWindow(ctk.CTk):
         self._translation_mode = settings.translation_mode
         self._loopback_enabled = False
         self._text_mode = False
+        self._vmic_enabled_prev = bool(settings.audio.virtual_mic_enabled) if (settings and hasattr(settings, "audio")) else False
 
         self.subtitle_overlay = SubtitleOverlay(self, settings.subtitles)
 
         self._build_ui()
         self._bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Apply Windows 11 styling if pywinstyles is available
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(self, "mica")
+        except Exception as e:
+            logger.debug(f"pywinstyles application skipped: {e}")
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -480,14 +488,24 @@ class MainWindow(ctk.CTk):
     # --- Dialog Callback Handlers ---
     def _on_audio_settings_changed(self, input_name, output_name, comp_audio, mic_audio, spk_audio) -> None:
         """Called when audio device selection changes in AudioSettingsPopup."""
-        changed = comp_audio != self._loopback_enabled
+        changed_loopback = comp_audio != self._loopback_enabled
         self._loopback_enabled = comp_audio
-        logger.info(f"Audio settings: input={input_name}, output={output_name}, loopback={comp_audio}")
 
-        # Auto-restart pipeline if loopback changed mid-session
-        if changed and self.pipeline.running:
-            logger.info(f"Loopback changed to {comp_audio}; restarting pipeline...")
-            self._restart_pipeline("loopback toggle")
+        # Check if virtual mic state changed
+        vmic = False
+        if self.settings and hasattr(self.settings, "audio"):
+            vmic = bool(self.settings.audio.virtual_mic_enabled)
+
+        vmic_prev = getattr(self, "_vmic_enabled_prev", False)
+        changed_vmic = vmic != vmic_prev
+        self._vmic_enabled_prev = vmic
+
+        logger.info(f"Audio settings: input={input_name}, output={output_name}, loopback={comp_audio}, vmic={vmic}")
+
+        # Auto-restart pipeline if loopback or virtual mic changed mid-session
+        if (changed_loopback or changed_vmic) and self.pipeline.running:
+            logger.info("Audio routing changed; restarting pipeline...")
+            self._restart_pipeline("routing toggle")
 
     def _restart_pipeline(self, reason: str = "") -> None:
         """Stop and restart the pipeline. Skips if a restart is already in progress."""

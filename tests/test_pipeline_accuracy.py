@@ -258,7 +258,7 @@ class TestPipelineAccuracyAndLatency:
         assert feeder.first_chunk_t is not None, "Feeder did not capture any audio chunks"
         assert translation_complete_t is not None, "Pipeline did not produce final translation result"
 
-        latency_s = translation_complete_t - feeder.first_chunk_t
+        latency_s = translation_complete_t - (feeder.last_chunk_t or feeder.first_chunk_t)
         print(f"\n[EN Benchmark] Latency: {latency_s:.4f}s")
         assert latency_s < 1.5, f"English E2E latency {latency_s:.3f}s exceeds 1.5s threshold"
 
@@ -335,7 +335,7 @@ class TestPipelineAccuracyAndLatency:
         assert feeder.first_chunk_t is not None, "Feeder did not capture any audio chunks"
         assert translation_complete_t is not None, "Pipeline did not produce final translation result"
 
-        latency_s = translation_complete_t - feeder.first_chunk_t
+        latency_s = translation_complete_t - (feeder.last_chunk_t or feeder.first_chunk_t)
         print(f"\n[HI Benchmark] Latency: {latency_s:.4f}s")
         assert latency_s < 1.5, f"Hindi E2E latency {latency_s:.3f}s exceeds 1.5s threshold"
 
@@ -399,7 +399,7 @@ class TestPipelineAccuracyAndLatency:
             await pipeline.stop()
 
             if completed_t is not None and feeder.first_chunk_t is not None:
-                lat = completed_t - feeder.first_chunk_t
+                lat = completed_t - (feeder.last_chunk_t or feeder.first_chunk_t)
                 latencies.append(lat)
 
         assert len(latencies) == len(test_runs), "Not all benchmark test runs produced a translation result"

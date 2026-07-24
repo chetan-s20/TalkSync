@@ -189,6 +189,66 @@ class TestArgosTranslate:
                     result = await translator.translate("Hello", "en", "hi", context="Previous: How are you?")
                     assert result.translated_text == "नमस्ते"
 
+    @pytest.mark.asyncio
+    async def test_argos_default_vocabulary_hi_en(self):
+        with patch("argostranslate.package.update_package_index"):
+            with patch("argostranslate.package.get_available_packages", return_value=[]):
+                with patch("argostranslate.translate") as mock_translate:
+                    mock_instance = MagicMock()
+                    mock_instance.translate.return_value = "i like safed kapde"
+                    mock_translate.get_translation_from_codes.return_value = mock_instance
+
+                    settings = MagicMock()
+                    settings.deepl_api_key = ""
+                    settings.proxy_url = ""
+                    settings.timeout_s = 5.0
+
+                    translator = ArgosTranslator(settings)
+                    await translator.start()
+
+                    result = await translator.translate("मुझे सफेद कपड़े पसंद हैं", "hi", "en")
+                    assert result.translated_text == "i like white clothes"
+
+    @pytest.mark.asyncio
+    async def test_argos_default_vocabulary_en_hi(self):
+        with patch("argostranslate.package.update_package_index"):
+            with patch("argostranslate.package.get_available_packages", return_value=[]):
+                with patch("argostranslate.translate") as mock_translate:
+                    mock_instance = MagicMock()
+                    mock_instance.translate.return_value = "my white friend"
+                    mock_translate.get_translation_from_codes.return_value = mock_instance
+
+                    settings = MagicMock()
+                    settings.deepl_api_key = ""
+                    settings.proxy_url = ""
+                    settings.timeout_s = 5.0
+
+                    translator = ArgosTranslator(settings)
+                    await translator.start()
+
+                    result = await translator.translate("my white friend", "en", "hi")
+                    assert result.translated_text == "my safed dost"
+
+    @pytest.mark.asyncio
+    async def test_argos_default_vocabulary_unsupported_pair(self):
+        with patch("argostranslate.package.update_package_index"):
+            with patch("argostranslate.package.get_available_packages", return_value=[]):
+                with patch("argostranslate.translate") as mock_translate:
+                    mock_instance = MagicMock()
+                    mock_instance.translate.return_value = "Hola mundo"
+                    mock_translate.get_translation_from_codes.return_value = mock_instance
+
+                    settings = MagicMock()
+                    settings.deepl_api_key = ""
+                    settings.proxy_url = ""
+                    settings.timeout_s = 5.0
+
+                    translator = ArgosTranslator(settings)
+                    await translator.start()
+
+                    result = await translator.translate("Hola mundo", "es", "fr")
+                    assert result.translated_text == "Hola mundo"
+
 
 class TestDeepL:
     @pytest.mark.asyncio

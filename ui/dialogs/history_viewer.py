@@ -27,6 +27,11 @@ class HistoryViewerDialog(ctk.CTkToplevel):
         self.selected_session_id: Optional[int] = None
         self._build_ui()
         self._load_session_list()
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(self, "mica")
+        except Exception:
+            pass
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=0, minsize=240)  # Left Sidebar

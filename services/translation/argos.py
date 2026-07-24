@@ -10,6 +10,40 @@ from utils.logger import get_logger
 
 logger = get_logger("translation_argos")
 
+DEFAULT_VOCABULARY = {
+    "hi_en": {
+        "safed": "white",
+        "kapde": "clothes",
+        "kapda": "cloth",
+        "kala": "black",
+        "laal": "red",
+        "neela": "blue",
+        "hara": "green",
+        "peela": "yellow",
+        "ghar": "home",
+        "paise": "money",
+        "pyaar": "love",
+        "dost": "friend",
+        "chai": "tea",
+        "pani": "water",
+        "roti": "bread",
+    },
+    "en_hi": {
+        "white": "safed",
+        "black": "kala",
+        "red": "laal",
+        "blue": "neela",
+        "green": "hara",
+        "yellow": "peela",
+        "clothes": "kapde",
+        "home": "ghar",
+        "friend": "dost",
+        "tea": "chai",
+        "water": "pani",
+        "bread": "roti",
+    },
+}
+
 
 class ArgosTranslator(BaseTranslator):
     def __init__(self, settings):
@@ -58,16 +92,37 @@ class ArgosTranslator(BaseTranslator):
     async def stop(self) -> None:
         self._model = None
 
+    @staticmethod
+    def _apply_default_vocabulary(text: str, source_lang: str, target_lang: str) -> str:
+        key = f"{source_lang.lower()}_{target_lang.lower()}"
+        vocab = DEFAULT_VOCABULARY.get(key)
+        if not vocab:
+            return text
+        result = text
+        for word, replacement in sorted(vocab.items(), key=lambda x: -len(x[0])):
+            if word:
+                result = result.replace(word, replacement)
+        return result
+
     async def translate(self, text: str, source_lang: str, target_lang: str, context: Optional[str] = None) -> TranslationResult:
+        import asyncio
         key = f"{source_lang.lower()}_{target_lang.lower()}"
         t = self._translations.get(key)
         if t is None:
             return TranslationResult(
-                original_text=text, translated_text=text,
+                original_text=text, translated_text=self._apply_default_vocabulary(text, source_lang, target_lang),
                 source_lang=source_lang, target_lang=target_lang,
                 is_final=True,
             )
-        result = t.translate(text)
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: t.translate(text))
+        except Exception as e:
+            logger.error(f"Argos translation failed: {e}")
+            result = text
+
+        result = self._apply_default_vocabulary(result, source_lang, target_lang)
         return TranslationResult(
             original_text=text, translated_text=result,
             source_lang=source_lang, target_lang=target_lang,

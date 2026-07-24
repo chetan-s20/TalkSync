@@ -13,22 +13,26 @@ class TranslationFactory:
     @staticmethod
     async def create(settings) -> BaseTranslator:
         trans_settings = getattr(settings, "translation", settings)
-        primary = None
-        try:
-            primary = ArgosTranslator(trans_settings)
-            await primary.start()
-            logger.info("Translation: Argos primary active")
-            return primary
-        except Exception as e:
-            logger.warning(f"Argos unavailable: {e}")
+        provider = getattr(trans_settings, "provider", "argos").lower()
 
-        try:
-            primary = DeepLTranslator(trans_settings)
-            await primary.start()
-            logger.info("Translation: DeepL fallback active")
-            return primary
-        except Exception as e:
-            logger.warning(f"DeepL unavailable: {e}")
+        # Build candidate list based on user preference
+        engines = []
+        if provider == "deepl":
+            engines.append(("DeepL", DeepLTranslator))
+            engines.append(("Argos", ArgosTranslator))
+        else:
+            engines.append(("Argos", ArgosTranslator))
+            engines.append(("DeepL", DeepLTranslator))
+
+        primary = None
+        for name, cls in engines:
+            try:
+                primary = cls(trans_settings)
+                await primary.start()
+                logger.info(f"Translation: {name} active as primary engine")
+                return primary
+            except Exception as e:
+                logger.warning(f"Translation engine {name} unavailable: {e}")
 
         try:
             dummy = DummyTranslator(trans_settings)

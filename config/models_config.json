@@ -4,9 +4,9 @@
         "beam_size": 5
     },
     "translation": {
-        "primary": "argos",
-        "fallback": "deepl",
-        "argos_model": "en_hi"
+        "provider": "deepl",
+        "fallback_provider": "argos",
+        "model": "deepl"
     },
     "tts": {
         "piper_voice": "en_US-lessac-medium",
@@ -16,7 +16,7 @@
     },
     "vad": {
         "threshold": 0.6,
-        "min_speech_duration_ms": 250,
-        "min_silence_duration_ms": 350
+        "min_speech_duration_ms": 400,
+        "min_silence_duration_ms": 500
     }
 }
