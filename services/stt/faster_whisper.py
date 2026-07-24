@@ -53,7 +53,7 @@ class FasterWhisperSTT:
         self._compression_ratio_threshold = compression_ratio_threshold if compression_ratio_threshold is not None else getattr(stt_settings, "compression_ratio_threshold", 2.0)
         self._log_prob_threshold = log_prob_threshold if log_prob_threshold is not None else getattr(stt_settings, "log_prob_threshold", -1.0)
         self._condition_on_previous_text = condition_on_previous_text if condition_on_previous_text is not None else getattr(stt_settings, "condition_on_previous_text", False)
-        self._initial_prompt = initial_prompt if initial_prompt is not None else getattr(stt_settings, "initial_prompt", None)
+        self._initial_prompt = initial_prompt if initial_prompt is not None else (getattr(stt_settings, "initial_prompt", None) or "TalkSync AI speech translation transcription.")
         self._rms_gate_threshold = rms_gate_threshold if rms_gate_threshold is not None else getattr(stt_settings, "rms_gate_threshold", 0.002)
         self._min_word_count = min_word_count if min_word_count is not None else getattr(stt_settings, "min_word_count", 2)
 
@@ -186,11 +186,34 @@ class FasterWhisperSTT:
         if isinstance(audio, bytes):
             audio = np.frombuffer(audio, dtype=np.float32).copy()
 
-        # 1. RMS Energy Gate: reject silent/low-energy audio before STT
-        rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-        if rms < self._rms_gate_threshold:
-            logger.debug(f"STT: RMS gate triggered ({rms:.6f} < {self._rms_gate_threshold}) — rejecting silence")
+        # 1. RMS Energy Gate: reject silent/low-energy audio before STT (run on raw signal)
+        raw_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        if raw_rms < self._rms_gate_threshold:
+            logger.debug(f"STT: RMS gate triggered ({raw_rms:.6f} < {self._rms_gate_threshold}) — rejecting silence")
             return None
+
+        # DSP Step 1: 100Hz Butterworth Highpass Filter to remove low-frequency rumble
+        try:
+            import scipy.signal
+            nyq = 0.5 * 16000.0
+            normal_cutoff = 100.0 / nyq
+            b, a = scipy.signal.butter(2, normal_cutoff, btype='high', analog=False)
+            audio = scipy.signal.lfilter(b, a, audio).astype(np.float32)
+        except Exception as filter_err:
+            logger.debug(f"STT [Filter]: Highpass filter skipped: {filter_err}")
+
+        # DSP Step 2: Automatic Gain Control (AGC) - Normalize signal RMS to 0.15
+        rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        if rms > 1e-4:
+            target_rms = 0.15
+            gain = target_rms / rms
+            if gain > 1.0:
+                gain = min(gain, 4.0)  # limit amplification to 4.0x
+                audio = np.clip(audio * gain, -1.0, 1.0)
+                logger.info(f"STT [AGC]: Amplified signal (gain={gain:.2f}x, rms={rms:.4f} -> target={target_rms:.2f})")
+            elif gain < 1.0:
+                audio = audio * gain   # attenuate loud signals
+                logger.info(f"STT [AGC]: Attenuated signal (gain={gain:.2f}x, rms={rms:.4f} -> target={target_rms:.2f})")
 
         def _get_result():
             if self._model is None:

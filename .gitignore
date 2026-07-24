@@ -26,9 +26,11 @@ install_log.txt
 
 # History DB
 history/talksync_history.db
+talksync.db
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+scripts/
