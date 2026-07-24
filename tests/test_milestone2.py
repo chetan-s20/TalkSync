@@ -17,40 +17,42 @@ from ui.widgets.transcript_panel import TranscriptPanel
 
 class TestMilestone2AudioLoopback:
     def test_find_wasapi_loopback_device_found(self):
-        """WASAPI loopback returns default WASAPI output device (or None if unavailable)."""
-        idx = find_wasapi_loopback()
-        # On test systems with WASAPI, may return a device index; on headless CI, may be None
-        assert idx is None or (isinstance(idx, int) and idx >= 0)
+        """WASAPI loopback returns WASAPI device name (or None if unavailable)."""
+        name = find_wasapi_loopback()
+        assert name is None or (isinstance(name, str) and len(name) > 0)
 
     def test_find_loopback_device_stereo_mix(self):
         devices = [
             {"name": "Microphone", "index": 0, "max_input_channels": 1, "max_output_channels": 0},
             {"name": "Stereo Mix (Realtek Audio)", "index": 1, "max_input_channels": 2, "max_output_channels": 0},
         ]
-        with patch("sounddevice.query_devices", return_value=devices):
-            res = find_loopback_device()
-            assert res is not None
-            assert res[0] == 1
-            assert "Stereo Mix" in res[1]
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=devices):
+                res = find_loopback_device()
+                assert res is not None
+                assert res[0] == 1
+                assert "Stereo Mix" in res[1]
 
     def test_find_loopback_device_vb_cable_fallback(self):
         devices = [
             {"name": "Microphone", "index": 0, "max_input_channels": 1, "max_output_channels": 0},
             {"name": "CABLE Output (VB-Audio Virtual Cable)", "index": 1, "max_input_channels": 2, "max_output_channels": 0},
         ]
-        with patch("sounddevice.query_devices", return_value=devices):
-            res = find_loopback_device()
-            assert res is not None
-            assert res[0] == 1
-            assert "Cable" in res[1]
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=devices):
+                res = find_loopback_device()
+                assert res is not None
+                assert res[0] == 1
+                assert "Cable" in res[1]
 
     def test_find_loopback_device_not_found(self):
         devices = [
             {"name": "Microphone", "index": 0, "max_input_channels": 1, "max_output_channels": 0},
         ]
-        with patch("sounddevice.query_devices", return_value=devices):
-            res = find_loopback_device()
-            assert res is None
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=devices):
+                res = find_loopback_device()
+                assert res is None
 
     @pytest.mark.asyncio
     async def test_input_queue_overflow_dropped_silently(self, mock_settings):
@@ -197,7 +199,7 @@ class TestMilestone2PipelineRouting:
         segment = TranscriptionSegment(
             text="Hola", is_final=True,
             start_time=datetime.now(), end_time=datetime.now(),
-            language="", confidence=0.0,
+            language="", confidence=0.5,
             input_source="COMPUTER_AUDIO",
         )
 

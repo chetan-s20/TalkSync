@@ -14,21 +14,23 @@ from services.audio_processing.agc import AutomaticGainControl
 
 class TestDeviceDiscovery:
     def test_find_loopback_device(self, mock_device_list):
-        with patch("sounddevice.query_devices", return_value=mock_device_list):
-            device = find_loopback_device()
-            assert device is not None
-            assert isinstance(device, tuple)
-            assert len(device) == 2
-            assert "Stereo Mix" in device[1]
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=mock_device_list):
+                device = find_loopback_device()
+                assert device is not None
+                assert isinstance(device, tuple)
+                assert len(device) == 2
+                assert "Stereo Mix" in device[1]
 
     def test_find_loopback_device_no_stereo_mix(self):
         devices = [
             {"name": "Microphone", "index": 0, "max_input_channels": 1, "max_output_channels": 0},
             {"name": "Speakers", "index": 1, "max_input_channels": 0, "max_output_channels": 2},
         ]
-        with patch("sounddevice.query_devices", return_value=devices):
-            device = find_loopback_device()
-            assert device is None
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=devices):
+                device = find_loopback_device()
+                assert device is None
 
     def test_find_virtual_cable(self, mock_device_list):
         with patch("sounddevice.query_devices", return_value=mock_device_list):
@@ -55,10 +57,11 @@ class TestDeviceDiscovery:
 
     def test_loopback_discovery_case_insensitive(self, mock_device_list):
         mock_device_list[2]["name"] = "stereo mix (realtek audio)"
-        with patch("sounddevice.query_devices", return_value=mock_device_list):
-            device = find_loopback_device()
-            assert device is not None
-            assert device[1] == "Stereo Mix"
+        with patch("services.audio.loopback.find_wasapi_loopback", return_value=None):
+            with patch("sounddevice.query_devices", return_value=mock_device_list):
+                device = find_loopback_device()
+                assert device is not None
+                assert device[1] == "Stereo Mix"
 
     def test_find_working_output_config_success(self):
         with patch("sounddevice.OutputStream") as mock_stream:

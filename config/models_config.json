@@ -1,7 +1,7 @@
 {
     "stt": {
-        "model": "Systran/faster-whisper-small",
-        "beam_size": 2
+        "model": "Systran/faster-distil-whisper-large-v3",
+        "beam_size": 5
     },
     "translation": {
         "primary": "argos",
@@ -17,6 +17,6 @@
     "vad": {
         "threshold": 0.6,
         "min_speech_duration_ms": 250,
-        "min_silence_duration_ms": 550
+        "min_silence_duration_ms": 350
     }
 }

@@ -19,6 +19,16 @@ class ArgosTranslator(BaseTranslator):
 
     async def start(self) -> None:
         try:
+            # Disable Stanza sentence boundary detection for faster translation
+            # This eliminates ~3s per language direction for loading Stanza models
+            # Trade-off: Best for short conversational phrases (< 20 words)
+            try:
+                import argostranslate.settings
+                argostranslate.settings.sentenceBoundaryDetection = False
+                logger.info("Argos: Stanza sentence splitting disabled for faster translation")
+            except Exception as e:
+                logger.debug(f"Could not disable Stanza: {e}")
+
             try:
                 argostranslate.package.update_package_index()
             except Exception as e:

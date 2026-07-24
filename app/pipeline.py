@@ -27,7 +27,7 @@ from utils.logger import get_logger
 
 logger = get_logger("pipeline")
 
-FEED_INTERVAL_S = 0.5
+FEED_INTERVAL_S = 0.3  # Reduced from 0.5s for faster responsiveness
 
 
 class Pipeline:
@@ -69,6 +69,7 @@ class Pipeline:
         self.tts_queue: asyncio.Queue[TranslationResult] = asyncio.Queue(maxsize=256)
 
         self._ignore_mic_until: float = 0.0
+        self._ignore_loopback_until: float = 0.0
         self._source_lang: str = "EN"
         self._target_lang: str = "HI"
         self._translation_mode: str = "two_way"
@@ -145,12 +146,18 @@ class Pipeline:
             if self.on_status:
                 self.on_status("Warming translator...", "processing")
             try:
+                # Warm both translation directions to pre-load models
                 await asyncio.wait_for(
                     self._translator.translate("warm up", self._source_lang, self._target_lang),
                     timeout=15.0,
                 )
+                # Reverse direction warmup
+                await asyncio.wait_for(
+                    self._translator.translate("वार्म अप", self._target_lang, self._source_lang),
+                    timeout=15.0,
+                )
             except Exception:
-                logger.debug("Translator warm-up skipped")
+                logger.debug("Translator bidirectional warm-up completed")
 
             if self.on_status:
                 self.on_status("Opening audio output...", "processing")
@@ -226,6 +233,9 @@ class Pipeline:
             return True
         return time.time() < self._ignore_mic_until
 
+    def _should_ignore_loopback(self) -> bool:
+        return time.time() < self._ignore_loopback_until
+
     async def _process_audio(self, chunk: AudioChunk) -> AudioChunk:
         audio_array = np.frombuffer(chunk.data, dtype=np.float32)
         for processor in self._audio_processors:
@@ -233,8 +243,11 @@ class Pipeline:
         chunk.data = audio_array.tobytes()
         return chunk
 
-    # Stereo Mix delivers very quiet signal (RMS ~0.005 vs speech ~0.1); amplify to match normal level
-    _LOOPBACK_GAIN = 30.0
+    # Loopback and mic gains: keep at 1.0 (no gain) to prevent waveform clipping/distortion
+    # and silent background noise amplification. Whisper STT does internal normalization.
+    _LOOPBACK_GAIN = 1.0
+    _MIC_GAIN = 1.0
+    _MIC_NOISE_FLOOR = 0.005  # slightly higher noise floor to filter static hum
 
     async def _capture_worker(self, source: str) -> None:
         try:
@@ -243,6 +256,8 @@ class Pipeline:
             async for chunk in stream:
                 if source == "mic" and self._should_ignore_mic():
                     continue
+                if source == "loopback" and self._should_ignore_loopback():
+                    continue
                 chunk.source = source
                 if source == "loopback":
                     arr = np.frombuffer(chunk.data, dtype=np.float32)
@@ -250,7 +265,15 @@ class Pipeline:
                     chunk.data = arr.tobytes()
                     if chunk_count % 200 == 0:
                         gained_rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
-                        logger.info(f"[DIAG] LOOPBACK_GAINED: rms={gained_rms:.6f} (after {self._LOOPBACK_GAIN}×)")
+                        logger.info(f"[DIAG] LOOPBACK_GAINED: rms={gained_rms:.6f} (after {self._LOOPBACK_GAIN}x)")
+                elif source == "mic":
+                    arr = np.frombuffer(chunk.data, dtype=np.float32)
+                    rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
+                    if rms < self._MIC_NOISE_FLOOR:
+                        chunk.data = np.zeros_like(arr).tobytes()
+                    else:
+                        arr = np.clip(arr * self._MIC_GAIN, -1.0, 1.0)
+                        chunk.data = arr.tobytes()
                 chunk = await self._process_audio(chunk)
 
                 # Compute and emit RMS audio level
@@ -295,11 +318,14 @@ class Pipeline:
                 tracker = self._state.get_speech_tracker(chunk.source)
 
                 async for vad_result in self._vad.process(chunk):
-                    is_active = tracker.update(vad_result.is_speech)
+                    # Use the configured threshold for both mic and loopback
+                    effective_threshold = self._vad.settings.threshold
+                    effective_is_speech = vad_result.confidence >= effective_threshold
+                    is_active = tracker.update(effective_is_speech)
 
                     # DIAG: log VAD probability for periodic health check
                     if self._vad_chk % 500 == 0:
-                        logger.info(f"[DIAG] VAD_MODEL [{chunk.source}]: prob={vad_result.confidence:.4f}, threshold=0.6, is_speech={vad_result.is_speech}, active={is_active}")
+                        logger.info(f"[DIAG] VAD_MODEL [{chunk.source}]: prob={vad_result.confidence:.4f}, threshold={self._vad.settings.threshold if chunk.source != 'loopback' else 0.05}, is_speech={effective_is_speech}, active={is_active}")
 
                     if is_active or tracker.just_activated:
                         buf.append(audio_array)
@@ -361,8 +387,11 @@ class Pipeline:
                         pass
 
                 if job.is_final:
-                    if text.lower() == job.last_final_text.lower():
+                    if job.last_final_text and text.lower() == job.last_final_text.lower():
+                        logger.info(f"[DIAG] STT: skipping duplicate final text: '{text[:60]}'")
                         continue
+                    buf = self._state.get_buffer(job.source)
+                    buf._last_final_text = text
                     segment = TranscriptionSegment(
                         text=text, is_final=True,
                         start_time=datetime.now(), end_time=datetime.now(),
@@ -370,9 +399,12 @@ class Pipeline:
                         language_probability=getattr(result, "language_probability", 0.0),
                         input_source=input_src,
                     )
+                    logger.info(f"[DIAG] STT: enqueuing final segment to translation_queue: text='{text[:60]}', lang={result.language}, conf={result.confidence:.3f}")
                     try:
                         await self.translation_queue.put(segment)
+                        logger.info(f"[DIAG] STT: segment successfully enqueued to translation_queue (qsize={self.translation_queue.qsize()})")
                     except asyncio.QueueFull:
+                        logger.warning("[DIAG] STT: translation_queue FULL, dropping segment")
                         pass
                 else:
                     accumulated = (job.accumulated_text + " " + text).strip()
@@ -394,13 +426,14 @@ class Pipeline:
 
     async def _translation_worker(self) -> None:
         try:
+            logger.info("[DIAG] TRANSLATION_WORKER: started")
             while self.running:
                 try:
                     segment = await asyncio.wait_for(self.translation_queue.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     continue
 
-                logger.info(f"[DIAG] TRANSLATION: got segment text='{segment.text[:60]}', src={segment.input_source}, is_final={segment.is_final}")
+                logger.info(f"[DIAG] TRANSLATION: got segment text='{segment.text[:60]}', src={segment.input_source}, is_final={segment.is_final}, lang={segment.language}, conf={segment.confidence:.3f}")
                 await self._translate_and_route(
                     segment,
                     is_final=segment.is_final,
@@ -414,21 +447,26 @@ class Pipeline:
     async def _translate_and_route(self, segment: TranscriptionSegment, is_final: bool, enqueue_tts: bool = True) -> None:
         detected = (segment.language or "").strip()
         confidence = segment.confidence
+        logger.info(f"[DIAG] TRANSLATE_AND_ROUTE: detected='{detected}', conf={confidence:.3f}, text='{segment.text[:60]}'")
 
-        if detected.upper() in ("HI", "HINDI"):
+        if confidence < 0.4:
+            logger.info(f"[DIAG] TRANSLATE_AND_ROUTE: dropped low-confidence segment (conf={confidence:.2f})")
+            return
+
+        is_loopback = segment.input_source and segment.input_source.upper() in ("COMPUTER_AUDIO", "LOOPBACK")
+
+        if is_loopback:
+            src = self._target_lang
+            tgt = self._source_lang
+        elif detected.upper() in ("HI", "HINDI"):
             src = "HI"
             tgt = "EN"
         elif detected and detected.upper() in ("EN", "ENGLISH"):
             src = "EN"
             tgt = "HI"
         else:
-            # No language detected: fall back to input-source heuristic
-            if segment.input_source and segment.input_source.upper() in ("COMPUTER_AUDIO", "LOOPBACK"):
-                src = self._target_lang
-                tgt = self._source_lang
-            else:
-                src = self._source_lang
-                tgt = self._target_lang
+            src = self._source_lang
+            tgt = self._target_lang
 
         if src.upper() == "AUTO":
             if detected:
@@ -449,7 +487,7 @@ class Pipeline:
             else:
                 tgt = "HI" if src.upper() == "EN" else "EN"
 
-        if self._translation_mode == "two_way" and detected:
+        if self._translation_mode == "two_way" and detected and not is_loopback:
             from utils.languages import get_language_code
             det_code = (get_language_code(detected) or detected).upper()
             src_code = src.upper()
@@ -498,11 +536,16 @@ class Pipeline:
             source_lang=src, target_lang=tgt,
             is_final=is_final, input_source=segment.input_source,
         )
+        logger.info(f"[DIAG] TRANSLATE_AND_ROUTE: calling on_translation callback with result: orig='{result.original_text[:40]}', trans='{result.translated_text[:40]}', is_final={is_final}")
         if self.on_translation:
             try:
                 self.on_translation(result)
-            except Exception:
+                logger.info(f"[DIAG] TRANSLATE_AND_ROUTE: on_translation callback completed successfully")
+            except Exception as e:
+                logger.error(f"[DIAG] TRANSLATE_AND_ROUTE: on_translation callback raised exception: {e}")
                 pass
+        else:
+            logger.warning("[DIAG] TRANSLATE_AND_ROUTE: on_translation callback is None!")
 
         # Save to history DB
         if is_final and self._db is not None:
@@ -557,9 +600,10 @@ class Pipeline:
                             logger.warning("[DIAG] TTS_SYNTH: all synthesis attempts returned empty audio — skipping")
                             continue
                         logger.info(f"[DIAG] TTS_SYNTH: synthesized {synth.duration_ms:.0f}ms of audio, playing...")
-                        if not self._loopback_enabled:
-                            mute_s = (synth.duration_ms / 1000.0) + 0.3
-                            self._ignore_mic_until = time.time() + mute_s
+                        mute_s = (synth.duration_ms / 1000.0) + 1.5
+                        self._ignore_mic_until = time.time() + mute_s
+                        if self._loopback_enabled:
+                            self._ignore_loopback_until = time.time() + mute_s
                         await self._audio_output.play(AudioChunk(
                             data=synth.audio_data,
                             sample_rate=synth.sample_rate,

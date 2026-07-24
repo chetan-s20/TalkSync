@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 import sounddevice as sd
 
 from utils.logger import get_logger
@@ -9,10 +10,17 @@ from utils.logger import get_logger
 logger = get_logger("loopback")
 
 
-def find_wasapi_loopback() -> Optional[int]:
-    """WASAPI loopback is NOT directly available via PortAudio sounddevice.
-    PortAudio's WASAPI host API requires the paWasapi_UseLoopback stream flag,
-    which sounddevice does not expose. Always returns None — Stereo Mix is used instead."""
+def find_wasapi_loopback() -> Optional[str]:
+    """Find WASAPI loopback device via soundcard (native Windows loopback).
+    Returns the device name if found, None otherwise."""
+    try:
+        import soundcard as sc
+        for m in sc.all_microphones(include_loopback=True):
+            if m.isloopback:
+                logger.info(f"Found WASAPI loopback: {m.name}")
+                return m.name
+    except Exception as e:
+        logger.debug(f"soundcard WASAPI loopback not available: {e}")
     return None
 
 
@@ -51,16 +59,23 @@ def find_vb_cable() -> Optional[int]:
     return None
 
 
-def find_loopback_device() -> Optional[tuple[int, str]]:
-    """Find best available loopback device. Priority: Stereo Mix > VB-Cable."""
+def find_loopback_device() -> Optional[tuple]:
+    """Find best available loopback device. Priority: WASAPI > Stereo Mix > VB-Cable.
+    Returns (device_id_or_name, type_label) where type_label is 'WASAPI', 'Stereo Mix', or 'VB-Cable'."""
     try:
-        # 1. Prefer Stereo Mix (built-in Windows loopback, no driver needed)
+        # 1. Prefer WASAPI loopback (soundcard) — captures digital output directly
+        dev = find_wasapi_loopback()
+        if dev is not None:
+            logger.info(f"Resolved loopback device: WASAPI ({dev})")
+            return dev, "WASAPI"
+
+        # 2. Fallback to Stereo Mix
         dev = find_stereo_mix()
         if dev is not None:
             logger.info(f"Resolved loopback device: Stereo Mix (index {dev})")
             return dev, "Stereo Mix"
 
-        # 2. Fallback to VB-Audio Cable Output
+        # 3. Fallback to VB-Audio Cable Output
         dev = find_vb_cable()
         if dev is not None:
             logger.info(f"Resolved loopback device: VB-Cable Output (index {dev})")

@@ -16,19 +16,21 @@ logger = get_logger("tts_sarvam")
 SARVAM_URL = "https://api.sarvam.ai/text-to-speech"
 
 # Language code → Sarvam bulbul:v3 speaker mapping
-# Default speaker is "shubh" (officially documented default for bulbul:v3)
+# Valid bulbul:v3 speakers: aditya, ritu, ashutosh, priya, neha, rahul, pooja, rohan,
+#   simran, kavya, amit, dev, ishita, shreya, ratan, varun, manan, sumit, roopa,
+#   kabir, aayan, shubh, advait, anand, tanya, tarun
 _LANG_SPEAKER: dict[str, str] = {
-    "hi": "shubh",
-    "hi-in": "shubh",
-    "mr": "shubh",
-    "ta": "shubh",
-    "te": "shubh",
-    "kn": "shubh",
-    "ml": "shubh",
-    "gu": "shubh",
-    "bn": "shubh",
-    "pa": "shubh",
-    "or": "shubh",
+    "hi": "ritu",
+    "hi-in": "ritu",
+    "mr": "ritu",
+    "ta": "ritu",
+    "te": "ritu",
+    "kn": "ritu",
+    "ml": "ritu",
+    "gu": "ritu",
+    "bn": "ritu",
+    "pa": "ritu",
+    "or": "ritu",
 }
 
 
@@ -73,18 +75,17 @@ class SarvamTTS(BaseTTS):
 
     # Valid bulbul:v3 speakers (from https://docs.sarvam.ai/api/getting-started/models/bulbul)
     _VALID_SPEAKERS = {
-        "shubh", "aditya", "ritu", "priya", "neha", "rahul", "pooja", "rohan",
+        "aditya", "ritu", "ashutosh", "priya", "neha", "rahul", "pooja", "rohan",
         "simran", "kavya", "amit", "dev", "ishita", "shreya", "ratan", "varun",
-        "manan", "sumit", "roopa", "kabir", "aayan", "ashutosh", "advait",
-        "anand", "tanya", "tarun", "sunny", "mani", "gokul", "vijay", "shruti",
-        "suhani", "mohit", "kavitha", "rehan", "soham", "rupali",
+        "manan", "sumit", "roopa", "kabir", "aayan", "shubh", "advait", "anand",
+        "tanya", "tarun",
     }
 
     def _resolve_speaker(self, lang: str) -> str:
         key = lang.lower().split("-")[0]
-        speaker = _LANG_SPEAKER.get(key, "shubh")
+        speaker = _LANG_SPEAKER.get(key, self._speaker)
         if speaker not in self._VALID_SPEAKERS:
-            speaker = "shubh"
+            speaker = "ritu"
         return speaker
 
 

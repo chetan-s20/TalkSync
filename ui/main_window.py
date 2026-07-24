@@ -544,8 +544,8 @@ class MainWindow(ctk.CTk):
     # Pipeline Callback Handlers
     def _on_transcription(self, segment) -> None:
         text = getattr(segment, "text", "") or ""
-        detected_lang = (getattr(segment, "language", "") or "").upper()
-        if detected_lang in ("HI", "HINDI"):
+        source = getattr(segment, "input_source", "VOICE")
+        if source in ("COMPUTER_AUDIO", "LOOPBACK"):
             self.after(0, lambda t=text: self.panel_b.update_streaming_text(original=t))
         else:
             self.after(0, lambda t=text: self.panel_a.update_streaming_text(original=t))
@@ -553,10 +553,10 @@ class MainWindow(ctk.CTk):
     def _on_translation(self, result) -> None:
         orig = getattr(result, "original_text", "")
         trans = getattr(result, "translated_text", "")
-        src = str(getattr(result, "source_lang", "")).upper()
+        source = getattr(result, "input_source", "VOICE")
 
-        if src == "HI":
-            self.after(0, lambda o=orig, t=trans: self.panel_b.append_message(original=o, translated=t, input_source="VOICE"))
+        if source in ("COMPUTER_AUDIO", "LOOPBACK"):
+            self.after(0, lambda o=orig, t=trans: self.panel_b.append_message(original=o, translated=t, input_source="LOOPBACK"))
         else:
             self.after(0, lambda o=orig, t=trans: self.panel_a.append_message(original=o, translated=t, input_source="VOICE"))
 

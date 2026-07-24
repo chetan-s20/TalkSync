@@ -13,6 +13,23 @@ from utils.logger import get_logger
 logger = get_logger("vad")
 
 
+class VADSpeechOutcome(tuple):
+    """Tuple subclass representing (is_speech: bool, confidence: float) that also behaves cleanly as boolean."""
+    def __new__(cls, is_speech: bool, confidence: float):
+        return super().__new__(cls, (bool(is_speech), float(confidence)))
+
+    @property
+    def is_speech(self) -> bool:
+        return self[0]
+
+    @property
+    def confidence(self) -> float:
+        return self[1]
+
+    def __bool__(self) -> bool:
+        return self[0]
+
+
 class SileroVAD(BaseVAD):
     def __init__(self, settings: VADSettings):
         self.settings = settings
@@ -56,36 +73,83 @@ class SileroVAD(BaseVAD):
         self._running = False
         self._model = None
 
+    def _eval_512_frame(self, frame_512: np.ndarray) -> float:
+        """Evaluate a single 512-sample audio frame with Silero VAD model."""
+        if self._model is None:
+            return 0.0
+        try:
+            audio_writable = np.ascontiguousarray(frame_512, dtype=np.float32)
+            tensor = torch.from_numpy(audio_writable).float().unsqueeze(0)
+            with torch.no_grad():
+                prob = float(self._model(tensor, 16000).item())
+            return prob
+        except Exception as e:
+            logger.debug(f"Silero VAD frame eval error: {e}")
+            return 0.0
+
+    def is_speech(self, audio: np.ndarray) -> VADSpeechOutcome:
+        """Analyze audio numpy array for speech presence using 512-sample frame windowing and noise floor gate."""
+        if audio is None or len(audio) == 0:
+            return VADSpeechOutcome(False, 0.0)
+
+        # Ensure float32 array and clean NaNs
+        if audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
+        audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        NOISE_FLOOR_RMS = 0.005
+
+        # Fallback heuristic mode if Silero VAD model is not loaded
+        if self._model is None:
+            is_sp = bool(np.mean(np.abs(audio)) > 0.01 and rms >= NOISE_FLOOR_RMS)
+            prob = 0.8 if is_sp else 0.2
+            return VADSpeechOutcome(is_sp, prob)
+
+        # 1. Noise floor gate check: RMS < 0.005 mutes silent static intervals
+        if rms < NOISE_FLOOR_RMS:
+            return VADSpeechOutcome(False, 0.0)
+
+        threshold = getattr(self.settings, "threshold", 0.55)
+
+        # 2. 512-sample frame iterator / sliding window for chunk sizes > 512
+        chunk_len = len(audio)
+        frame_probs = []
+
+        if chunk_len < 512:
+            # Short chunk: pad to 512 samples
+            padded = np.pad(audio, (0, 512 - chunk_len))
+            frame_probs.append(self._eval_512_frame(padded))
+        else:
+            # Chunk > 512 samples: process in 512-sample window frames
+            step = 512
+            for i in range(0, chunk_len, step):
+                frame = audio[i : i + 512]
+                if len(frame) < 512:
+                    frame = np.pad(frame, (0, 512 - len(frame)))
+                prob = self._eval_512_frame(frame)
+                frame_probs.append(prob)
+
+        max_prob = float(max(frame_probs)) if frame_probs else 0.0
+        is_speech_bool = max_prob >= threshold
+        return VADSpeechOutcome(is_speech_bool, max_prob)
+
+
     async def process(self, chunk: AudioChunk) -> AsyncIterator[VADResult]:
         if not self._running:
             return
         try:
-            audio = np.frombuffer(chunk.data, dtype=np.float32)
-            threshold = self.settings.threshold
-
-            if self._model is not None:
-                # Silero VAD requires exactly 512 samples at 16kHz — pad or truncate
-                if audio.shape[0] < 512:
-                    audio = np.pad(audio, (0, 512 - audio.shape[0]))
-                elif audio.shape[0] > 512:
-                    audio = audio[:512]
-                audio_writable = np.ascontiguousarray(audio)
-                tensor = torch.from_numpy(audio_writable).float().unsqueeze(0)
-
-                with torch.no_grad():
-                    prob = float(self._model(tensor, 16000).item())
-                is_speech = prob >= threshold
-            else:
-                is_speech = bool(np.mean(np.abs(audio)) > 0.01)
-                prob = 0.8 if is_speech else 0.2
+            audio = np.frombuffer(chunk.data, dtype=np.float32).copy()
+            outcome = self.is_speech(audio)
 
             yield VADResult(
-                is_speech=is_speech,
+                is_speech=outcome.is_speech,
                 speech_start=None,
                 speech_end=None,
-                confidence=prob,
+                confidence=outcome.confidence,
                 chunk=chunk,
             )
         except Exception as e:
             logger.debug(f"VAD process error: {e}")
             yield VADResult(is_speech=False, confidence=0.0, chunk=chunk)
+

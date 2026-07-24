@@ -21,7 +21,7 @@ class FasterWhisperSTT:
         model_name: Optional[str] = None,
         device: Optional[str] = None,
         beam_size: Optional[int] = None,
-        vad_filter: bool = True,
+        vad_filter: Optional[bool] = None,
         no_speech_threshold: Optional[float] = None,
         compression_ratio_threshold: Optional[float] = None,
         log_prob_threshold: Optional[float] = None,
@@ -41,7 +41,7 @@ class FasterWhisperSTT:
         self._model_name = model_name or getattr(stt_settings, "model", "Systran/faster-whisper-small")
         self._device = device or getattr(stt_settings, "device", "cpu")
         self._beam_size = beam_size if beam_size is not None else getattr(stt_settings, "beam_size", 1)
-        self._vad_filter = vad_filter
+        self._vad_filter = vad_filter if vad_filter is not None else getattr(stt_settings, "vad_filter", False)
         self._no_speech_threshold = no_speech_threshold if no_speech_threshold is not None else getattr(stt_settings, "no_speech_threshold", 0.7)
         self._compression_ratio_threshold = compression_ratio_threshold if compression_ratio_threshold is not None else getattr(stt_settings, "compression_ratio_threshold", 2.4)
         self._log_prob_threshold = log_prob_threshold if log_prob_threshold is not None else getattr(stt_settings, "log_prob_threshold", -1.0)
@@ -54,7 +54,10 @@ class FasterWhisperSTT:
 
         try:
             from faster_whisper import WhisperModel
-            compute_type = "float16" if self._device == "cuda" else "int8"
+            # Respect compute_type from settings, fallback to device-optimized default
+            compute_type = getattr(stt_settings, "compute_type", None) or (
+                "float16" if self._device == "cuda" else "int8"
+            )
             self._model = WhisperModel(self._model_name, device=self._device, compute_type=compute_type)
             self._loaded = True
         except Exception:
@@ -87,17 +90,37 @@ class FasterWhisperSTT:
     async def start(self, language: Optional[str] = None) -> None:
         if isinstance(language, str) and language.strip().lower() in ("auto", "automatic"):
             language = None
+        # Recreate executor in case it was shut down during previous stop()
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
         if self._model is None:
             from faster_whisper import WhisperModel
             self._language = language
             logger.info(f"Loading STT model: {self._model_name}")
             t0 = time.perf_counter()
             try:
+                # Respect compute_type from settings, fallback to device-optimized default
+                compute_type = getattr(self.settings, "compute_type", None) or (
+                    "float16" if self._device == "cuda" else "int8"
+                )
                 self._model = WhisperModel(
-                    self._model_name, device="cuda", compute_type="float16",
+                    self._model_name,
+                    device=self._device,
+                    compute_type=compute_type,
                 )
                 self._loaded = True
-                logger.info(f"STT model loaded in {time.perf_counter() - t0:.1f}s")
+                elapsed = time.perf_counter() - t0
+                logger.info(f"STT model loaded in {elapsed:.1f}s")
+
+                # Log GPU info if using CUDA
+                if self._device == "cuda":
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            gpu_name = torch.cuda.get_device_name(0)
+                            vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                            logger.info(f"STT using GPU: {gpu_name}, VRAM: {vram_gb:.1f}GB, compute_type: {compute_type}")
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"CUDA load failed: {e}")
                 try:
@@ -130,7 +153,6 @@ class FasterWhisperSTT:
         initial_prompt: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        # VAD sends raw bytes; convert to writable float32 numpy array for faster-whisper
         if isinstance(audio, bytes):
             audio = np.frombuffer(audio, dtype=np.float32).copy()
 

@@ -25,7 +25,7 @@ class AudioSettings(BaseSettings):
 
 class VADSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="vad_", extra="ignore")
-    threshold: float = Field(default=0.6)
+    threshold: float = Field(default=0.55)
     min_speech_duration_ms: int = Field(default=250)
     min_silence_duration_ms: int = Field(default=150)
     speech_frames_to_activate: int = Field(default=3)
@@ -36,13 +36,14 @@ class STTSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="stt_", extra="ignore")
     model: str = Field(default="Systran/faster-whisper-small")
     beam_size: int = Field(default=1)
-    no_speech_threshold: float = Field(default=0.7)
-    log_prob_threshold: float = Field(default=-1.0)
+    no_speech_threshold: float = Field(default=0.55)
+    log_prob_threshold: float = Field(default=-0.8)
     compression_ratio_threshold: float = Field(default=2.4)
     initial_prompt: str = Field(default="This is a Hindi and English conversation.")
-    avg_logprob_threshold: float = Field(default=-0.5)
+    avg_logprob_threshold: float = Field(default=-0.8)
     device: str = Field(default="auto")
     compute_type: str = Field(default="float16")
+    vad_filter: bool = Field(default=False)
 
 
 class TranslationSettings(BaseSettings):

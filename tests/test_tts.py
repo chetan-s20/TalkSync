@@ -479,6 +479,201 @@ class TestSarvamTTS:
         settings.sarvam_voice = "shubh"
         settings.sarvam_lang = "hi-IN"
         settings.sarvam_timeout_s = 30.0
+        assert tts._speaker == "shubh"
+        assert tts._lang == "hi-IN"
+
+    @pytest.mark.asyncio
+    async def test_sarvam_initialization_no_key(self):
+        settings = MagicMock()
+        settings.sarvam_api_key = ""
+        settings.sarvam_voice = "shubh"
+        settings.sarvam_lang = "hi-IN"
+        settings.sarvam_timeout_s = 30.0
+
+        tts = SarvamTTS(settings)
+        await tts.start()
+
+        assert tts._api_key == ""
+
+    @pytest.mark.asyncio
+    async def test_sarvam_synthesize_success(self):
+        import base64
+        wav_bytes = _make_wav_bytes(24000, 0.5)
+        b64_audio = base64.b64encode(wav_bytes).decode()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"audios": [b64_audio]}
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "test-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            result = await tts.synthesize("नमस्ते", lang="hi")
+            assert result.sample_rate == 24000
+            assert result.duration_ms > 0
+
+    @pytest.mark.asyncio
+    async def test_sarvam_api_timeout(self):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = TimeoutError("Request timed out")
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "test-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            result = await tts.synthesize("नमस्ते")
+            assert result.sample_rate == 8000
+            assert result.duration_ms == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_sarvam_decode_base64_audio(self):
+        import base64
+        wav_bytes = _make_wav_bytes(24000, 0.3)
+        b64_audio = base64.b64encode(wav_bytes).decode()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"audios": [b64_audio]}
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "test-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            result = await tts.synthesize("नमस्ते")
+            assert len(result.audio_data) > 0
+            assert result.sample_rate == 24000
+
+    @pytest.mark.asyncio
+    async def test_sarvam_api_error_status(self):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 401
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "bad-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            result = await tts.synthesize("नमस्ते")
+            assert result.sample_rate == 8000
+            assert result.duration_ms == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_sarvam_no_api_key_returns_silence(self):
+        settings = MagicMock()
+        settings.sarvam_api_key = ""
+        settings.sarvam_voice = "shubh"
+        settings.sarvam_lang = "hi-IN"
+        settings.sarvam_timeout_s = 30.0
+
+        tts = SarvamTTS(settings)
+        await tts.start()
+
+        result = await tts.synthesize("Hello")
+        assert result.sample_rate == 8000
+        assert result.duration_ms == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_sarvam_empty_audio_response(self):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"audios": []}
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "test-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            result = await tts.synthesize("नमस्ते")
+            assert result.duration_ms == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_sarvam_synthesize_stream(self):
+        import base64
+        wav_bytes = _make_wav_bytes(24000, 0.3)
+        b64_audio = base64.b64encode(wav_bytes).decode()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"audios": [b64_audio]}
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            settings = MagicMock()
+            settings.sarvam_api_key = "test-key"
+            settings.sarvam_voice = "shubh"
+            settings.sarvam_lang = "hi-IN"
+            settings.sarvam_timeout_s = 30.0
+
+            tts = SarvamTTS(settings)
+            await tts.start()
+
+            async def text_gen():
+                yield "नमस्ते"
+                yield "दुनिया"
+
+            results = []
+            async for r in tts.synthesize_stream(text_gen()):
+                results.append(r)
+
+            assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_sarvam_set_voice(self):
+        settings = MagicMock()
+        settings.sarvam_api_key = "test-key"
+        settings.sarvam_voice = "shubh"
+        settings.sarvam_lang = "hi-IN"
+        settings.sarvam_timeout_s = 30.0
 
         tts = SarvamTTS(settings)
         await tts.set_voice("neel")
@@ -487,29 +682,29 @@ class TestSarvamTTS:
     def test_resolve_speaker_known_lang(self):
         settings = MagicMock()
         tts = SarvamTTS(settings)
-        assert tts._resolve_speaker("hi") == "shubh"
-        assert tts._resolve_speaker("hi-IN") == "shubh"
-        assert tts._resolve_speaker("ta") == "shubh"
-        assert tts._resolve_speaker("mr") == "shubh"
+        assert tts._resolve_speaker("hi") == "ritu"
+        assert tts._resolve_speaker("hi-IN") == "ritu"
+        assert tts._resolve_speaker("ta") == "ritu"
+        assert tts._resolve_speaker("mr") == "ritu"
 
     def test_resolve_speaker_unknown_lang_falls_back_to_default(self):
         settings = MagicMock()
         tts = SarvamTTS(settings)
-        assert tts._resolve_speaker("fr") == "shubh"
-        assert tts._resolve_speaker("en") == "shubh"
-        assert tts._resolve_speaker("es") == "shubh"
+        assert tts._resolve_speaker("fr") == "ritu"
+        assert tts._resolve_speaker("en") == "ritu"
+        assert tts._resolve_speaker("es") == "ritu"
 
     def test_resolve_speaker_invalid_speaker_falls_back_to_default(self):
         settings = MagicMock()
         settings.sarvam_voice = "unknown_invalid_voice"
         tts = SarvamTTS(settings)
-        assert tts._resolve_speaker("en") == "shubh"
+        assert tts._resolve_speaker("en") == "ritu"
 
     def test_resolve_speaker_returns_mapped_speaker_when_valid(self):
         settings = MagicMock()
         settings.sarvam_voice = "anushka"
         tts = SarvamTTS(settings)
-        assert tts._resolve_speaker("hi") == "shubh"
+        assert tts._resolve_speaker("hi") == "ritu"
 
 
 class TestTTSRouter:

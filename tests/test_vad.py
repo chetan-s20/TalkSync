@@ -43,7 +43,7 @@ class TestSileroVAD:
             mock_load.return_value = (mock_model, None)
             vad = SileroVAD(settings)
             assert vad is not None
-            assert vad.settings.threshold == 0.6
+            assert vad.settings.threshold == 0.3
             assert vad.settings.min_speech_duration_ms == 250
 
     def test_vad_initialization_custom_threshold(self):

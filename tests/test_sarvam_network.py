@@ -15,7 +15,7 @@ async def run_network_test():
     payload = {
         "inputs": ["namaste, aap kaise hain"],
         "target_language_code": "hi-IN",
-        "speaker": "anushka",
+        "speaker": "ritu",
         "pace": 1.0,
         "speech_sample_rate": 22050,
         "enable_preprocessing": True,

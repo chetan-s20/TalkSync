@@ -6,9 +6,9 @@ from typing import Optional
 
 import numpy as np
 
-SPEECH_FRAMES_TO_ACTIVATE = 3
+SPEECH_FRAMES_TO_ACTIVATE = 2  # Reduced from 3 for faster activation (~30ms improvement)
 SILENCE_FRAMES_TO_DEACTIVATE = 5
-MIN_SPEECH_SAMPLES = 1600
+MIN_SPEECH_SAMPLES = 1200  # Reduced from 1600 for faster initial response (~25ms improvement)
 
 
 class SpeechTracker:
@@ -127,7 +127,6 @@ class PerSourceAudioBuffer:
             )
             return job
 
-        self._last_final_text = self._accumulated_text or ""
         job = SttJob(
             source=self.source,
             audio=full,

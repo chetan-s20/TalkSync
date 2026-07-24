@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -183,7 +183,7 @@ class TestFasterWhisperSTT:
             mock_instance = MagicMock()
             mock_model.return_value = mock_instance
             stt = FasterWhisperSTT(model_name="Systran/faster-whisper-small")
-            assert stt.no_speech_threshold == 0.7
+            assert stt.no_speech_threshold == 0.55
 
     def test_stt_compression_ratio_threshold(self):
         with patch("faster_whisper.WhisperModel") as mock_model:
@@ -197,7 +197,8 @@ class TestFasterWhisperSTT:
             mock_instance = MagicMock()
             mock_model.return_value = mock_instance
             stt = FasterWhisperSTT(model_name="Systran/faster-whisper-small")
-            assert stt.log_prob_threshold == -1.0
+            assert stt.log_prob_threshold == -0.8
+
 
 
 class TestSTTIntegration:

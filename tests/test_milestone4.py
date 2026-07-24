@@ -188,7 +188,7 @@ class TestMilestone4DualPanel:
             start_time=now,
             end_time=now,
             language="",
-            confidence=0.0,
+            confidence=0.5,
             input_source="COMPUTER_AUDIO",
         )
 
