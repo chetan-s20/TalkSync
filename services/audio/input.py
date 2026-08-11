@@ -12,6 +12,7 @@ from app.interfaces import AudioChunk, BaseAudioInput
 from config.settings import AudioSettings
 from services.audio.loopback import find_loopback_device, find_stereo_mix, find_vb_cable, find_vb_cable_output
 from services.audio.resampler import resample
+from utils.device import find_best_input_device
 from utils.logger import get_logger
 
 logger = get_logger("audio_input")
@@ -91,7 +92,11 @@ class SoundDeviceInput(BaseAudioInput):
                                     _queue.get_nowait()  # Evict oldest chunk to prevent pipeline stall
                                 except Exception:
                                     pass
-                                logger.warning(f"Audio input queue overflow for source '{source}'; evicted oldest chunk")
+                                now = time.time()
+                                attr_name = f"_last_overflow_log_{source}"
+                                if now - getattr(self, attr_name, 0.0) >= 5.0:
+                                    setattr(self, attr_name, now)
+                                    logger.warning(f"Audio input queue overflow for source '{source}' (evicting oldest chunks)")
                             _queue.put_nowait(_c)
                             self._total_chunks_processed += 1
                         except Exception as e:
@@ -122,7 +127,16 @@ class SoundDeviceInput(BaseAudioInput):
 
         try:
             if loopback:
-                await self._start_loopback(device_id, capture_mic)
+                try:
+                    await self._start_loopback(device_id, capture_mic)
+                except Exception as loop_e:
+                    logger.warning(f"Audio loopback capture initialization failed ({loop_e}) — falling back cleanly to microphone-only capture")
+                    self._loopback_queue = None
+                    self._loopback_stream = None
+                    if capture_mic:
+                        await self._start_mic(device_id)
+                    else:
+                        raise
             else:
                 await self._start_mic(device_id)
         except Exception as e:
@@ -131,9 +145,8 @@ class SoundDeviceInput(BaseAudioInput):
             raise
 
     async def _start_loopback(self, device_id: Optional[int], capture_mic: bool) -> None:
-        loop_dev = find_loopback_device()
+        loop_dev = find_loopback_device(getattr(self.settings, "output_device_id", None))
         if loop_dev is None:
-            self._running = False
             raise RuntimeError("No loopback device found (WASAPI, Stereo Mix, or VB-Cable)")
 
         dev, dev_type = loop_dev
@@ -142,6 +155,7 @@ class SoundDeviceInput(BaseAudioInput):
             # Use soundcard WASAPI loopback (preferred)
             try:
                 await self._start_wasapi_loopback(str(dev))
+                logger.info(f"Loopback capturing from: {dev} — headphone audio WILL be captured")
                 logger.info(f"Loopback started via WASAPI ({dev})")
             except Exception as e:
                 err_msg = f"WASAPI loopback failed ({dev}): {e}"
@@ -154,7 +168,7 @@ class SoundDeviceInput(BaseAudioInput):
             await self._start_sd_loopback(int(dev), str(dev_type))
 
         if capture_mic:
-            await self._start_mic(None)
+            await self._start_mic(device_id)
 
     async def _start_fallback_loopback(self) -> None:
         """Fallback helper when WASAPI loopback fails."""
@@ -199,13 +213,60 @@ class SoundDeviceInput(BaseAudioInput):
 
         def _capture():
             try:
+                import ctypes
+                try:
+                    ctypes.windll.ole32.CoInitialize(None)
+                except Exception:
+                    pass
                 gain = float(getattr(self.settings, "volume", 1.0))
-                with loop_dev.recorder(samplerate=target_sr, channels=1, blocksize=chunk_size) as rec:
+                
+                # Determine loopback sample rates to try
+                rates_to_try = [target_sr]
+                native_rate = 48000
+                try:
+                    if hasattr(loop_dev, "default_samplerate"):
+                        native_rate = int(loop_dev.default_samplerate)
+                    elif hasattr(loop_dev, "samplerate"):
+                        native_rate = int(loop_dev.samplerate)
+                except Exception:
+                    pass
+                if native_rate not in rates_to_try:
+                    rates_to_try.append(native_rate)
+                for r in (44100, 48000):
+                    if r not in rates_to_try:
+                        rates_to_try.append(r)
+
+                rec = None
+                active_sr = target_sr
+                for rate in rates_to_try:
+                    try:
+                        block = int(rate * self.settings.chunk_duration_ms / 1000)
+                        rec = loop_dev.recorder(samplerate=rate, channels=1, blocksize=block)
+                        active_sr = rate
+                        logger.info(f"Opened WASAPI loopback recorder at sample rate {rate}Hz (blocksize={block})")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed opening WASAPI loopback at {rate}Hz: {e}", exc_info=True)
+                
+                if rec is None:
+                    raise RuntimeError("All sample rates failed to open loopback recorder")
+
+                with rec:
+                    block = int(active_sr * self.settings.chunk_duration_ms / 1000)
                     while _running[0]:
-                        data = rec.record(numframes=chunk_size)
+                        data = rec.record(numframes=block)
                         if data is None or len(data) == 0:
                             continue
-                        data = np.asarray(data, dtype=np.float32).ravel()
+                        data = np.asarray(data, dtype=np.float32)
+                        if data.ndim > 1:
+                            data = np.mean(data, axis=1) if data.shape[1] > 1 else data[:, 0]
+                        else:
+                            data = data.ravel()
+                        
+                        # Resample if captured rate differs from target (16000)
+                        if active_sr != target_sr:
+                            data = resample(data, active_sr, target_sr)
+                            
                         if gain != 1.0:
                             data = data * gain
                         data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -248,14 +309,19 @@ class SoundDeviceInput(BaseAudioInput):
         try:
             dev_info = sd.query_devices(dev_id)
         except Exception as e:
-            self._running = False
             raise RuntimeError(f"Loopback device {dev_id} ({desc}) not available: {e}")
 
         native_sr = int(dev_info.get("default_samplerate", 44100))
         native_ch = max(1, dev_info.get("max_input_channels", 2))
+        loopback_name = dev_info.get("name", desc)
 
-        # Try target sample rate first, fall back to native sample rate
-        sample_rates = [self.settings.sample_rate, native_sr]
+        logger.info(f"Loopback capturing from: {loopback_name} — headphone audio WILL be captured")
+
+        # Open at native sample rate (44.1kHz/48kHz) first, then resample to 16kHz in callback
+        if native_sr != self.settings.sample_rate:
+            sample_rates = [native_sr, self.settings.sample_rate]
+        else:
+            sample_rates = [self.settings.sample_rate]
 
         last_err = None
         for sr in sample_rates:
@@ -283,29 +349,29 @@ class SoundDeviceInput(BaseAudioInput):
                     logger.debug(f"Loopback via {host_label} at {sr}Hz failed: {e}")
 
         if last_err is not None:
-            self._running = False
             err_msg = f"Failed to open loopback stream on {desc} (device {dev_id}): {last_err}"
             self._device_init_errors.append(err_msg)
             raise RuntimeError(err_msg)
 
     async def _start_mic(self, device_id: Optional[int]) -> None:
-        candidates = []
-        try:
-            dev_info = sd.query_devices(device_id)
-            native_sr = int(dev_info["default_samplerate"]) if dev_info.get("default_samplerate") else self.settings.sample_rate
-            native_ch = int(dev_info.get("max_input_channels", 1))
-            if native_ch < 1:
-                native_ch = 1
-            
-            # Prioritize target rate (e.g. 16kHz) to avoid linear resampler artifacts entirely!
-            candidates.append((device_id, self.settings.sample_rate, min(native_ch, self.settings.channels)))
-            # Fallback to default card rate
-            candidates.append((device_id, native_sr, min(native_ch, self.settings.channels)))
-            candidates.append((device_id, native_sr, 1))
-        except Exception:
-            pass
+        best_id, best_name = find_best_input_device(device_id)
+        logger.info(f"Microphone selection resolved to device ID {best_id} ('{best_name}')")
 
-        # Fallback candidates
+        candidates = []
+        if best_id is not None:
+            try:
+                dev_info = sd.query_devices(best_id)
+                native_sr = int(dev_info["default_samplerate"]) if dev_info.get("default_samplerate") else self.settings.sample_rate
+                native_ch = int(dev_info.get("max_input_channels", 1))
+                if native_ch >= 1:
+                    candidates.append((best_id, self.settings.sample_rate, min(native_ch, self.settings.channels)))
+                    candidates.append((best_id, native_sr, min(native_ch, self.settings.channels)))
+                    candidates.append((best_id, native_sr, 1))
+            except Exception as e:
+                logger.debug(f"Failed to query resolved mic device {best_id}: {e}")
+                self._device_init_errors.append(f"Query specified mic device {best_id} failed: {e}")
+
+        # Fallback candidates using system default if resolved device fails or is None
         candidates.append((None, self.settings.sample_rate, self.settings.channels))
         candidates.append((None, self.settings.sample_rate, 1))
         candidates.append((None, 44100, 1))
@@ -323,7 +389,9 @@ class SoundDeviceInput(BaseAudioInput):
                 )
                 stream.start()
                 self._mic_stream = stream
-                logger.info(f"Mic started (device={dev}, rate={sr}, ch={ch})")
+                if dev is not None:
+                    self.settings.input_device_id = dev
+                logger.info(f"Mic stream started cleanly (device={dev} ['{best_name}'], rate={sr}Hz, ch={ch})")
                 return
             except Exception as e:
                 last_err = e

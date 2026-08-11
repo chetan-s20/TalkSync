@@ -12,11 +12,12 @@ from app.interfaces import AudioChunk, BaseAudioOutput
 from config.settings import AudioSettings
 from services.audio.loopback import find_vb_cable_output
 from services.audio.resampler import resample
+from utils.device import find_best_output_device, find_best_physical_output_device
 from utils.logger import get_logger
 
 logger = get_logger("audio_output")
 
-OUTPUT_RATES = (24000, 44100, 48000, 16000)
+OUTPUT_RATES = (44100, 48000, 24000, 16000)
 OUTPUT_CHANNELS = (2, 1)
 
 
@@ -47,38 +48,56 @@ class SoundDeviceOutput(BaseAudioOutput):
         if device_id is None:
             device_id = self.settings.output_device_id
 
-        # Validate: reject recording-only devices (e.g. Stereo Mix idx 4)
-        if device_id is not None and not self._is_valid_output_device(device_id):
-            logger.warning(
-                f"Configured output device {device_id} has no output channels "
-                f"(likely a recording device like Stereo Mix). Falling back to system default."
-            )
-            device_id = None
+        resolved_id, resolved_name = find_best_output_device(device_id)
+        logger.info(f"Playback selection resolved to device ID {resolved_id} ('{resolved_name}')")
 
         self._running = True
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
 
-        self._speaker_stream = self._try_open_output(device_id)
-        if self._speaker_stream is None:
-            logger.warning("Speaker output stream creation failed — trying system default")
-            self._speaker_stream = self._try_open_output(None)
+        # Check if resolved_id is VB-Cable endpoint
+        is_virtual = any(k in (resolved_name or "").lower() for k in ("cable input", "virtual cable", "vb-audio"))
+        if is_virtual:
+            logger.info(f"Configured output '{resolved_name}' is VB-Cable virtual mic endpoint")
+            self._virtual_stream = self._try_open_virtual_output(resolved_id)
+            phys_id, phys_name = find_best_physical_output_device()
+            logger.info(f"Physical headphone/speaker output auto-detected on device ID {phys_id} ('{phys_name}')")
+            self._speaker_stream = self._try_open_output(phys_id)
+        else:
+            self._speaker_stream = self._try_open_output(resolved_id)
+            if self._speaker_stream is None:
+                logger.warning("Speaker/headphones output stream creation failed — trying system default")
+                self._speaker_stream = self._try_open_output(None)
 
-        if self.settings.virtual_mic_enabled:
             vb_dev = find_vb_cable_output()
             if vb_dev is not None:
-                self._virtual_stream = self._try_open_output(vb_dev)
+                self._virtual_stream = self._try_open_virtual_output(vb_dev)
                 if self._virtual_stream is not None:
-                    logger.info(f"Virtual mic output started (device {vb_dev})")
-            else:
+                    logger.info(f"Virtual mic output started on VB-Cable (device {vb_dev})")
+            elif self.settings.virtual_mic_enabled:
                 logger.warning("VB-Cable output not found for virtual mic")
 
+    def _try_open_virtual_output(self, device_id: int) -> Optional[sd.OutputStream]:
+        """Try to open dedicated virtual mic output stream without speaker fallback."""
+        for rate in OUTPUT_RATES:
+            for channels in OUTPUT_CHANNELS:
+                try:
+                    stream = sd.OutputStream(
+                        samplerate=rate, channels=channels,
+                        dtype="float32", device=device_id,
+                    )
+                    stream.start()
+                    logger.info(f"Virtual mic output stream opened (device={device_id}, rate={rate}, ch={channels})")
+                    return stream
+                except Exception as e:
+                    logger.debug(f"Failed opening virtual mic stream (device={device_id}, rate={rate}, ch={channels}): {e}")
+                    continue
+        return None
+
     def _try_open_output(self, device_id: Optional[int] = None) -> Optional[sd.OutputStream]:
-        # Build candidate list: try specified device first, then system default
         candidate_devices: list[Optional[int]] = []
         if device_id is not None and self._is_valid_output_device(device_id):
             candidate_devices.append(device_id)
-        # Always include system default as final fallback
         if None not in candidate_devices:
             candidate_devices.append(None)
 
@@ -102,7 +121,7 @@ class SoundDeviceOutput(BaseAudioOutput):
     async def stop(self) -> None:
         self._running = False
         try:
-            self._play_queue.put_nowait((None, 0))
+            self._play_queue.put_nowait((None, 0, "both"))
         except queue.Full:
             pass
         if self._play_thread is not None and self._play_thread.is_alive():
@@ -122,9 +141,9 @@ class SoundDeviceOutput(BaseAudioOutput):
         self._speaker_stream = None
         self._virtual_stream = None
 
-    def _enqueue(self, raw: bytes, sample_rate: int) -> None:
+    def _enqueue(self, raw: bytes, sample_rate: int, target: str = "both") -> None:
         try:
-            self._play_queue.put_nowait((raw, sample_rate))
+            self._play_queue.put_nowait((raw, sample_rate, target))
         except queue.Full:
             pass
 
@@ -132,13 +151,17 @@ class SoundDeviceOutput(BaseAudioOutput):
         try:
             while self._running:
                 try:
-                    raw, sr = self._play_queue.get(timeout=0.1)
+                    item = self._play_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                if raw is None:
+                if item[0] is None:
                     break
                 if self._muted:
                     continue
+
+                raw, sr = item[0], item[1]
+                target = item[2] if len(item) > 2 else "both"
+
                 try:
                     audio = np.frombuffer(raw, dtype=np.float32)
                 except Exception:
@@ -146,27 +169,57 @@ class SoundDeviceOutput(BaseAudioOutput):
                 if self._volume != 1.0:
                     audio = np.clip(audio * self._volume, -1.0, 1.0).astype(np.float32)
 
-                for stream in (self._speaker_stream, self._virtual_stream):
-                    if stream is None:
-                        continue
+                streams_to_write = []
+                if target == "speaker":
+                    if self._speaker_stream is not None:
+                        streams_to_write.append(self._speaker_stream)
+                elif target == "virtual":
+                    if self._virtual_stream is not None:
+                        streams_to_write.append(self._virtual_stream)
+                    if self._speaker_stream is not None:
+                        streams_to_write.append(self._speaker_stream)
+                else:  # "both"
+                    for st in (self._speaker_stream, self._virtual_stream):
+                        if st is not None:
+                            streams_to_write.append(st)
+
+                threads = []
+                def write_to_stream(st, data):
+                    try:
+                        st.write(data)
+                    except Exception as e:
+                        logger.debug(f"Output write error: {e}")
+
+                for stream in streams_to_write:
                     try:
                         out_audio = audio
                         if sr != stream.samplerate:
                             out_audio = resample(audio, sr, int(stream.samplerate))
-                        if stream.channels == 2 and out_audio.ndim == 1:
-                            out_audio = np.column_stack([out_audio, out_audio])
+                        if stream.channels > 1 and out_audio.ndim == 1:
+                            out_audio = np.tile(out_audio[:, np.newaxis], (1, stream.channels))
                         elif stream.channels == 1 and out_audio.ndim == 2:
                             out_audio = out_audio[:, 0]
-                        stream.write(out_audio.astype(np.float32))
-                    except Exception as e:
-                        logger.debug(f"Output write error: {e}")
+                        
+                        t = threading.Thread(target=write_to_stream, args=(stream, out_audio.astype(np.float32)), daemon=True)
+                        t.start()
+                        threads.append(t)
+                    except Exception as prep_err:
+                        logger.error(f"Failed preparing stream write: {prep_err}")
+
+                for t in threads:
+                    t.join()
         except Exception as e:
             logger.error(f"Playback loop error: {e}")
 
-    async def play(self, chunk: AudioChunk) -> None:
+    async def play(self, chunk: AudioChunk, target: str = "both") -> None:
         if self._delay_s > 0:
             await asyncio.sleep(self._delay_s)
-        self._enqueue(chunk.data, chunk.sample_rate)
+        src = (getattr(chunk, "source", "") or "").lower()
+        if src in ("panel_a", "mic"):
+            target = "virtual"
+        elif src in ("panel_b", "loopback", "computer_audio"):
+            target = "speaker"
+        self._enqueue(chunk.data, chunk.sample_rate, target=target)
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, volume))

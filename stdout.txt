@@ -1,0 +1,4 @@
+2026-07-23 13:23:23,076 | INFO    | httpx | HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main "HTTP/1.1 200 OK"
+2026-07-23 13:23:26,597 | INFO    | argostranslate.utils | ('get_installed_languages',)
+2026-07-23 13:23:26,604 | INFO    | translation_argos | Argos Translator ready: EN <-> HI
+2026-07-23 13:23:26,604 | INFO    | translation_factory | Translation: Argos primary active

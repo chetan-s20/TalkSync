@@ -253,3 +253,33 @@ class TestSTTIntegration:
             audio = np.random.randn(16000).astype(np.float32)
             result = stt.transcribe(audio, 16000)
             assert True
+
+
+class TestSTTFactory:
+    @pytest.mark.asyncio
+    async def test_factory_creates_faster_whisper_by_default(self):
+        with patch("faster_whisper.WhisperModel"):
+            from services.stt.factory import STTFactory
+            settings = MagicMock()
+            settings.stt_engine = "local"
+            settings.openai = MagicMock(api_key="")
+
+            stt = await STTFactory.create(settings)
+            assert isinstance(stt, FasterWhisperSTT)
+
+    @pytest.mark.asyncio
+    async def test_factory_openai_fallback_to_whisper(self):
+        with patch("services.stt.factory.OpenAISTT") as mock_openai:
+            mock_instance = AsyncMock()
+            mock_instance.start.side_effect = RuntimeError("OpenAI Key Invalid")
+            mock_openai.return_value = mock_instance
+
+            with patch("faster_whisper.WhisperModel"):
+                from services.stt.factory import STTFactory
+                settings = MagicMock()
+                settings.stt_engine = "openai"
+                settings.openai = MagicMock(api_key="invalid_key")
+
+                stt = await STTFactory.create(settings)
+                assert isinstance(stt, FasterWhisperSTT)
+                mock_instance.start.assert_called_once()

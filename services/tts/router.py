@@ -8,11 +8,12 @@ import numpy as np
 from app.interfaces import SynthesisResult, BaseTTS
 from services.tts.piper import PiperTTS
 from services.tts.sarvam import SarvamTTS
+from services.tts.openai_tts import OpenAITTS
 from utils.logger import get_logger
 
 logger = get_logger("tts_router")
 
-SARVAM_LANGS = {"hi", "mr", "ta", "te", "kn", "ml", "gu", "bn", "pa", "or", "en"}
+SARVAM_LANGS = {"hi", "mr", "ta", "te", "kn", "ml", "gu", "bn", "pa", "or"}
 
 
 def _lang_family(code: str) -> str:
@@ -24,7 +25,18 @@ class MultilingualTTSRouter(BaseTTS):
         self.settings = settings
         self._piper = None
         self._sarvam = None
+        self._openai = None
         self._running = False
+
+    async def _get_openai(self):
+        if self._openai is None:
+            try:
+                self._openai = OpenAITTS(self.settings)
+                await self._openai.start()
+            except Exception as e:
+                logger.warning(f"OpenAI TTS unavailable: {e}")
+                self._openai = None
+        return self._openai
 
     async def _get_piper(self):
         if self._piper is None:
@@ -47,32 +59,49 @@ class MultilingualTTSRouter(BaseTTS):
         return self._sarvam
 
     def _select_engine(self, target_lang: str) -> str:
+        model_pref = getattr(self.settings, "model", "openai").lower() if self.settings else "openai"
+        if model_pref in ("openai", "tts-1"):
+            return "openai"
         if _lang_family(target_lang) in SARVAM_LANGS:
             return "sarvam"
         return "piper"
 
     async def start(self) -> None:
         self._running = True
+        await asyncio.gather(
+            self._get_openai(),
+            self._get_piper(),
+            self._get_sarvam(),
+            return_exceptions=True,
+        )
 
     async def stop(self) -> None:
         self._running = False
-        for eng in (self._piper, self._sarvam):
+        for eng in (self._openai, self._piper, self._sarvam):
             if eng is not None:
                 try:
                     await eng.stop()
                 except Exception:
                     pass
-        self._piper = self._sarvam = None
+        self._openai = self._piper = self._sarvam = None
 
     async def synthesize(self, text: str, lang: str = "en") -> SynthesisResult:
         if not self._running:
             return self._silence()
         engine_name = self._select_engine(lang)
         order = [engine_name]
-        order.append("piper" if engine_name == "sarvam" else "sarvam")
+        for candidate in ("openai", "piper", "sarvam"):
+            if candidate not in order:
+                order.append(candidate)
 
         for name in order:
-            eng = await (self._get_sarvam() if name == "sarvam" else self._get_piper())
+            if name == "openai":
+                eng = await self._get_openai()
+            elif name == "sarvam":
+                eng = await self._get_sarvam()
+            else:
+                eng = await self._get_piper()
+
             if eng is None:
                 continue
             try:
@@ -112,10 +141,14 @@ class MultilingualTTSRouter(BaseTTS):
                 yield await self.synthesize(text.strip(), lang)
 
     async def set_voice(self, voice_id: str) -> None:
+        if self._openai is not None:
+            await self._openai.set_voice(voice_id)
         if self._piper is not None:
             await self._piper.set_voice(voice_id)
 
     async def set_speed(self, speed: float) -> None:
+        if self._openai is not None:
+            await self._openai.set_speed(speed)
         if self._piper is not None:
             await self._piper.set_speed(speed)
 

@@ -1,51 +1,47 @@
-# BRIEFING — 2026-07-23T05:10:10Z
+# BRIEFING — 2026-08-07T10:36:22Z
 
 ## Mission
-Verify Milestone 2 pipeline routing, panel dispatch, and integration tests for TalkSync AI as Reviewer 2.
+Perform independent code review and adversarial challenge for Milestone 2: STT & Translation Execution Pipeline.
 
 ## 🔒 My Identity
 - Archetype: reviewer / critic
 - Roles: reviewer, critic
-- Working directory: d:/talksync/talksync/.agents/reviewer_m2_2
-- Original parent: 2b5d5736-355d-4e1d-9fb4-68328bcbb8a6
-- Milestone: Milestone 2
-- Instance: Reviewer 2
+- Working directory: d:\talksync\talksync\.agents\reviewer_m2_2
+- Original parent: 68d2ae8e-1159-408b-a744-51a5abf94200
+- Milestone: Milestone 2 (STT & Translation Execution Pipeline)
+- Instance: 2 of 2
 
 ## 🔒 Key Constraints
 - Review-only — do NOT modify implementation code
-- Perform objective quality review and adversarial critique
-- Check for integrity violations (hardcoded test results, facade implementations, shortcuts)
-- Write handoff report with 5-component layout to d:/talksync/talksync/.agents/reviewer_m2_2/handoff.md
+- Report findings accurately with clear evidence
+- Verify tests and check for integrity violations
 
 ## Current Parent
-- Conversation ID: 2b5d5736-355d-4e1d-9fb4-68328bcbb8a6
-- Updated: 2026-07-23T05:10:10Z
+- Conversation ID: 68d2ae8e-1159-408b-a744-51a5abf94200
+- Updated: 2026-08-07T10:37:38Z
 
 ## Review Scope
-- **Files to review**: app/pipeline.py, ui/widgets/transcript_panel.py, ui/main_window.py, tests/integration/test_full_pipeline.py, tests/test_pipeline.py
-- **Interface contracts**: PROJECT.md / SCOPE.md
-- **Review criteria**: Correct routing of system audio loopback to Panel B (remote speaker) vs mic speech to Panel A (local speaker), facade checks, test execution
+- **Files to review**: `app/bridge.py`, `services/translation/deepl.py`, `services/translation/factory.py`, `services/stt/factory.py`, `services/stt/openai_stt.py`, `app/application.py`
+- **Interface contracts**: `d:\talksync\talksync\PROJECT.md`, `d:\talksync\talksync\.agents\ORIGINAL_REQUEST.md`
+- **Review criteria**: correctness, async safety, exception handling, integrity violations, layout & test passing
 
 ## Review Checklist
-- **Items reviewed**: app/pipeline.py, ui/widgets/transcript_panel.py, ui/main_window.py, tests/integration/test_full_pipeline.py, tests/test_pipeline.py
-- **Verdict**: APPROVE
-- **Unverified claims**: None. All claims verified via code inspection and pytest execution (39/39 tests passed).
+- **Items reviewed**: `app/bridge.py`, `services/translation/deepl.py`, `services/translation/factory.py`, `services/stt/factory.py`, `services/stt/openai_stt.py`, `app/application.py`
+- **Verdict**: **APPROVE**
+- **Unverified claims**: none (86 milestone tests + full test suite verified)
 
 ## Attack Surface
-- **Hypotheses tested**: 
-  1. Source tagging integrity across pipeline workers (mic vs loopback vs text)
-  2. Directional language swapping for remote speaker loopback
-  3. UI thread dispatch safety (`self.after(0, ...)`)
-  4. Facade/hardcoded output detection
-- **Vulnerabilities found**: None.
-- **Untested angles**: Hardware-level loopback audio driver compatibility (covered by mock/unit level).
+- **Hypotheses tested**: Async event loop thread persistence, DeepL exception fallback, STTFactory OpenAI fallback, idempotency of `OpenAISTT.start()`.
+- **Vulnerabilities found**: Minor event loop scope shift when `build_pipeline()` runs outside event loop (mitigated in current setup; flagged for future hardening).
+- **Untested angles**: Physical hardware audio loopback capture (requires real WASAPI hardware).
 
 ## Key Decisions Made
-- Confirmed correct architectural separation and panel routing logic.
-- Confirmed 39/39 pytest test suite execution passing without error.
-- Issued verdict: APPROVE.
+- Executed specified test suite (86 passed).
+- Performed line-by-line inspection and integrity audit (0 violations found).
+- Issued APPROVE verdict and wrote analysis.md & handoff.md.
 
 ## Artifact Index
-- d:/talksync/talksync/.agents/reviewer_m2_2/ORIGINAL_REQUEST.md — Initial task request
-- d:/talksync/talksync/.agents/reviewer_m2_2/BRIEFING.md — Persistent state tracking
-- d:/talksync/talksync/.agents/reviewer_m2_2/handoff.md — Detailed review report
+- d:\talksync\talksync\.agents\reviewer_m2_2\DISPATCH.md — dispatch log
+- d:\talksync\talksync\.agents\reviewer_m2_2\BRIEFING.md — working memory
+- d:\talksync\talksync\.agents\reviewer_m2_2\analysis.md — detailed code review & analysis report
+- d:\talksync\talksync\.agents\reviewer_m2_2\handoff.md — 5-component handoff report with verdict

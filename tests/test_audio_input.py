@@ -77,6 +77,44 @@ class TestDeviceDiscovery:
             config = try_open_output(device_id=None)
             assert config == (None, None)
 
+    def test_find_best_input_device_prefer_headset(self):
+        from utils.device import find_best_input_device
+        devices = [
+            {"name": "Speakers (Realtek)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0},
+            {"name": "Microphone Array (Realtek)", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0},
+            {"name": "Headset Microphone (Realtek)", "max_input_channels": 1, "max_output_channels": 0, "hostapi": 0},
+        ]
+        with patch("sounddevice.query_devices", return_value=devices):
+            with patch("sounddevice.default.device", [1, 0]):
+                dev_id, dev_name = find_best_input_device(requested_id=None)
+                assert dev_id == 2
+                assert "Headset" in dev_name
+
+    def test_find_best_input_device_fallback_from_invalid_37(self):
+        from utils.device import find_best_input_device
+        devices = [
+            {"name": "Speakers (Realtek)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0},
+            {"name": "Microphone Array (Realtek)", "max_input_channels": 2, "max_output_channels": 0, "hostapi": 0},
+        ]
+        # Index 37 out of bounds or 0 input channels
+        with patch("sounddevice.query_devices", return_value=devices):
+            with patch("sounddevice.default.device", [1, 0]):
+                dev_id, dev_name = find_best_input_device(requested_id=37)
+                assert dev_id == 1
+                assert "Microphone Array" in dev_name
+
+    def test_find_best_output_device_prefer_headphones(self):
+        from utils.device import find_best_output_device
+        devices = [
+            {"name": "Speakers (Realtek)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0},
+            {"name": "Headphones (Realtek)", "max_input_channels": 0, "max_output_channels": 2, "hostapi": 0},
+        ]
+        with patch("sounddevice.query_devices", return_value=devices):
+            with patch("sounddevice.default.device", [0, 0]):
+                dev_id, dev_name = find_best_output_device(requested_id=None)
+                assert dev_id == 1
+                assert "Headphones" in dev_name
+
 
 class TestAudioResampler:
     def test_resample_basic(self):

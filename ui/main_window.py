@@ -64,6 +64,16 @@ class MainWindow(ctk.CTk):
         self._text_mode = False
         self._vmic_enabled_prev = bool(settings.audio.virtual_mic_enabled) if (settings and hasattr(settings, "audio")) else False
 
+        # Dialog tracking to ensure single instances (FRONT-04)
+        self._audio_settings_popup = None
+        self._ai_assistant_dialog = None
+        self._history_viewer_dialog = None
+        self._speaker_options_dialog = None
+        self._language_selector_dialog = None
+        self._diagnostics_dialog = None
+        self._summary_dialog = None
+        self._about_dialog = None
+
         self.subtitle_overlay = SubtitleOverlay(self, settings.subtitles)
 
         self._build_ui()
@@ -232,8 +242,10 @@ class MainWindow(ctk.CTk):
             lang_pair=f"{self._source_lang.lower()} → {self._target_lang.lower()}",
             model_name="TalkSync AI",
             speaker_active=True,
+            mic_active=True,
             on_lang_click=self._show_language_selector,
             on_speaker_click=self._toggle_panel_a_speaker,
+            on_mic_click=self._toggle_microphone,
             on_options_click=self._show_diagnostics,
         )
         self.panel_a.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
@@ -344,7 +356,7 @@ class MainWindow(ctk.CTk):
             # Clear panels before starting new session
             self.panel_a.clear()
             self.panel_b.clear()
-            self.btn_play.configure(text="■", text_color=ACCENT_RED)
+            self.btn_play.configure(text="⏳", state="disabled", text_color="#94A3B8")
             self.timer_label.start()
             threading.Thread(target=self._run_pipeline_thread, daemon=True).start()
         else:
@@ -377,12 +389,22 @@ class MainWindow(ctk.CTk):
         self.pipeline._loop = loop
 
         async def _task():
-            await self.pipeline.start(
-                source_lang=self._source_lang,
-                target_lang=self._target_lang,
-                loopback=self._loopback_enabled,
-                text_mode=self._text_mode,
-            )
+            try:
+                await self.pipeline.start(
+                    source_lang=self._source_lang,
+                    target_lang=self._target_lang,
+                    loopback=self._loopback_enabled,
+                    text_mode=self._text_mode,
+                )
+                self.after(0, lambda: self.btn_play.configure(text="■", state="normal", text_color=ACCENT_RED))
+                self.after(0, lambda: self.status_bar.set_status("Session running"))
+            except Exception as e:
+                logger.error(f"Pipeline start failed: {e}")
+                self.after(0, lambda: self.btn_play.configure(text="▶", state="normal", text_color=ACCENT_GREEN))
+                self.after(0, lambda: self.timer_label.stop())
+                self.pipeline.running = False
+                raise e
+
             while self.pipeline.running:
                 await asyncio.sleep(0.1)
 
@@ -392,7 +414,7 @@ class MainWindow(ctk.CTk):
             logger.error(f"Pipeline loop error: {e}")
             self._last_start_failed_at = time.time()
             self.after(0, lambda: self.status_bar.set_status(f"Error: {e}"))
-            self.after(0, lambda: self.btn_play.configure(text="▶", text_color=ACCENT_GREEN))
+            self.after(0, lambda: self.btn_play.configure(text="▶", state="normal", text_color=ACCENT_GREEN))
             self.after(0, lambda: self.timer_label.stop())
             self.pipeline.running = False
 
@@ -427,16 +449,36 @@ class MainWindow(ctk.CTk):
             self.after(0, lambda: self.status_bar.set_status("Pipeline not running — press ▶ to start"))
 
     def _show_audio_settings(self) -> None:
-        AudioSettingsPopup(self, self.settings, on_update_callback=self._on_audio_settings_changed)
+        if self._audio_settings_popup and self._audio_settings_popup.winfo_exists():
+            self._audio_settings_popup.lift()
+            self._audio_settings_popup.focus()
+            return
+        self._audio_settings_popup = AudioSettingsPopup(self, self.settings, on_update_callback=self._on_audio_settings_changed)
+        self._audio_settings_popup.grab_set()
 
     def _show_ai_assistant(self) -> None:
-        AIAssistantDialog(self, self.settings, on_save_callback=self._on_ai_assistant_saved)
+        if self._ai_assistant_dialog and self._ai_assistant_dialog.winfo_exists():
+            self._ai_assistant_dialog.lift()
+            self._ai_assistant_dialog.focus()
+            return
+        self._ai_assistant_dialog = AIAssistantDialog(self, self.settings, on_save_callback=self._on_ai_assistant_saved)
+        self._ai_assistant_dialog.grab_set()
 
     def _show_history(self) -> None:
-        HistoryViewerDialog(self, self.settings.history.db_path)
+        if self._history_viewer_dialog and self._history_viewer_dialog.winfo_exists():
+            self._history_viewer_dialog.lift()
+            self._history_viewer_dialog.focus()
+            return
+        self._history_viewer_dialog = HistoryViewerDialog(self, self.settings.history.db_path)
+        self._history_viewer_dialog.grab_set()
 
     def _show_speaker_options(self) -> None:
-        SpeakerOptionsDialog(self, self.settings, on_update_callback=self._on_speaker_options_changed)
+        if self._speaker_options_dialog and self._speaker_options_dialog.winfo_exists():
+            self._speaker_options_dialog.lift()
+            self._speaker_options_dialog.focus()
+            return
+        self._speaker_options_dialog = SpeakerOptionsDialog(self, self.settings, on_update_callback=self._on_speaker_options_changed)
+        self._speaker_options_dialog.grab_set()
 
     def _toggle_panel_a_speaker(self, active: bool) -> None:
         if hasattr(self, 'pipeline') and self.pipeline:
@@ -446,17 +488,33 @@ class MainWindow(ctk.CTk):
         if hasattr(self, 'pipeline') and self.pipeline:
             self.pipeline.tts_enabled_b = active
 
+    def _toggle_microphone(self, active: bool) -> None:
+        if hasattr(self, 'pipeline') and self.pipeline:
+            self.pipeline.mute_mic(not active)
+            status = "Unmuted" if active else "Muted"
+            self.after(0, lambda: self.status_bar.set_status(f"Microphone {status}"))
+
     def _show_language_selector(self) -> None:
-        LanguageSelectorDialog(
+        if self._language_selector_dialog and self._language_selector_dialog.winfo_exists():
+            self._language_selector_dialog.lift()
+            self._language_selector_dialog.focus()
+            return
+        self._language_selector_dialog = LanguageSelectorDialog(
             self,
             source_lang=self._source_lang,
             target_lang=self._target_lang,
             mode=self._translation_mode,
             on_change_callback=self._update_languages,
         )
+        self._language_selector_dialog.grab_set()
 
     def _show_diagnostics(self) -> None:
-        DiagnosticsDialog(self, self.settings, pipeline=self.pipeline)
+        if self._diagnostics_dialog and self._diagnostics_dialog.winfo_exists():
+            self._diagnostics_dialog.lift()
+            self._diagnostics_dialog.focus()
+            return
+        self._diagnostics_dialog = DiagnosticsDialog(self, self.settings, pipeline=self.pipeline)
+        self._diagnostics_dialog.grab_set()
 
     def _toggle_subtitles(self) -> None:
         if self.subtitle_overlay.is_visible:
@@ -468,6 +526,18 @@ class MainWindow(ctk.CTk):
         self._source_lang = src
         self._target_lang = tgt
         self._translation_mode = mode
+        
+        # Persist language changes to settings
+        self.settings.source_lang = src
+        self.settings.target_lang = tgt
+        self.settings.translation_mode = mode
+        
+        # Instantly update running pipeline languages
+        if hasattr(self.pipeline, "_source_lang"):
+            self.pipeline._source_lang = src.upper()
+        if hasattr(self.pipeline, "_target_lang"):
+            self.pipeline._target_lang = tgt.upper()
+
         self.panel_a.update_lang_pair(f"{src.lower()} → {tgt.lower()}")
         self.panel_b.update_lang_pair(f"{tgt.lower()} → {src.lower()}")
         if hasattr(self.pipeline, 'set_translation_mode'):

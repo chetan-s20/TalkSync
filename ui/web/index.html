@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalkSync AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-dark">
+    <div id="app" class="app-container">
+        <!-- 1. HEADER TOOLBAR -->
+        <header class="app-header glass-panel">
+            <div class="brand">
+                <span class="logo-icon">⚡</span>
+                <h1 class="logo-title">TalkSync <span class="accent-text">AI</span></h1>
+                <div id="status-badge" class="badge status-stopped">
+                    <span class="badge-dot"></span>
+                    <span id="status-text">STOPPED</span>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <!-- Latency Performance Pill -->
+                <div id="latency-pill" class="latency-pill">
+                    <span class="latency-label">Latency:</span>
+                    <span id="lat-stt" class="lat-val">0ms</span> <span class="lat-sep">|</span>
+                    <span id="lat-trans" class="lat-val">0ms</span> <span class="lat-sep">|</span>
+                    <span id="lat-tts" class="lat-val">0ms</span> <span class="lat-sep">|</span>
+                    <span id="lat-total" class="lat-val highlight">0ms</span>
+                </div>
+            </div>
+
+            <div class="header-controls">
+                <!-- Language Selectors -->
+                <div class="lang-selector-group">
+                    <select id="select-source-lang" class="select-input">
+                        <option value="EN" selected>English (EN)</option>
+                        <option value="HI">Hindi (HI)</option>
+                        <option value="ES">Spanish (ES)</option>
+                        <option value="FR">French (FR)</option>
+                        <option value="DE">German (DE)</option>
+                        <option value="ZH">Chinese (ZH)</option>
+                        <option value="JA">Japanese (JA)</option>
+                        <option value="KO">Korean (KO)</option>
+                        <option value="AUTO">Auto Detect</option>
+                    </select>
+                    <span class="lang-arrow">➔</span>
+                    <select id="select-target-lang" class="select-input">
+                        <option value="HI" selected>Hindi (HI)</option>
+                        <option value="EN">English (EN)</option>
+                        <option value="ES">Spanish (ES)</option>
+                        <option value="FR">French (FR)</option>
+                        <option value="DE">German (DE)</option>
+                        <option value="ZH">Chinese (ZH)</option>
+                        <option value="JA">Japanese (JA)</option>
+                        <option value="KO">Korean (KO)</option>
+                    </select>
+                </div>
+
+                <!-- Mode Switcher -->
+                <div class="mode-switcher">
+                    <button id="btn-mode-2way" class="btn-mode active" onclick="TalkSyncUI.setMode('2-way')">2-Way</button>
+                    <button id="btn-mode-1way" class="btn-mode" onclick="TalkSyncUI.setMode('1-way')">1-Way</button>
+                </div>
+
+                <!-- Action Buttons -->
+                <button id="btn-open-history" class="btn-icon" title="Session History" onclick="TalkSyncUI.toggleHistoryModal(true)">⏱️</button>
+                <button id="btn-open-settings" class="btn-icon" title="Audio & AI Settings" onclick="TalkSyncUI.toggleSettingsModal(true)">⚙️</button>
+            </div>
+        </header>
+
+        <!-- 2. MAIN TRANSCRIPT GRID -->
+        <main class="main-content">
+            <div id="transcript-grid" class="transcript-grid mode-2way">
+                <!-- Panel A: User Microphone / Local Speaker -->
+                <section id="panel-a" class="panel-card glass-panel">
+                    <div class="panel-header">
+                        <div class="speaker-info">
+                            <span class="speaker-avatar avatar-user">👤</span>
+                            <span class="panel-title">Speaker 1 / Panel A (You)</span>
+                            <span id="badge-lang-a" class="badge-lang">EN</span>
+                        </div>
+                        <div class="panel-actions">
+                            <button id="btn-tts-a" class="btn-toggle-active" title="Toggle Panel A TTS" onclick="TalkSyncUI.togglePanelTTS('A')">🔊 TTS</button>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <!-- Streaming Partial Segment Area -->
+                        <div id="streaming-a" class="streaming-box empty">
+                            <span class="streaming-indicator"></span>
+                            <p id="streaming-text-a" class="streaming-text"></p>
+                        </div>
+                        <!-- Finalized Segment Cards List -->
+                        <div id="history-list-a" class="history-list"></div>
+                    </div>
+                </section>
+
+                <!-- Panel B: Interlocutor / System Audio -->
+                <section id="panel-b" class="panel-card glass-panel">
+                    <div class="panel-header">
+                        <div class="speaker-info">
+                            <span class="speaker-avatar avatar-remote">🌐</span>
+                            <span class="panel-title">Speaker 2 / Panel B (Remote)</span>
+                            <span id="badge-lang-b" class="badge-lang">HI</span>
+                        </div>
+                        <div class="panel-actions">
+                            <button id="btn-tts-b" class="btn-toggle-active" title="Toggle Panel B TTS" onclick="TalkSyncUI.togglePanelTTS('B')">🔊 TTS</button>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <!-- Streaming Partial Segment Area -->
+                        <div id="streaming-b" class="streaming-box empty">
+                            <span class="streaming-indicator"></span>
+                            <p id="streaming-text-b" class="streaming-text"></p>
+                        </div>
+                        <!-- Finalized Segment Cards List -->
+                        <div id="history-list-b" class="history-list"></div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <!-- 3. LIVE AUDIO WAVEFORM VISUALIZER SECTION -->
+        <section class="visualizer-section glass-panel">
+            <div class="visualizer-header">
+                <span class="visualizer-title">Live Audio Waveform</span>
+                <div id="vad-indicator" class="vad-pill inactive">
+                    <span class="vad-dot"></span>
+                    <span id="vad-text">SILENCE</span>
+                </div>
+            </div>
+            <div class="canvas-container">
+                <canvas id="waveformCanvas"></canvas>
+            </div>
+        </section>
+
+        <!-- 4. BOTTOM CONTROL BAR -->
+        <footer class="control-dock glass-panel">
+            <div class="dock-left">
+                <button id="btn-mic-toggle" class="btn-circle btn-mic" title="Toggle Mic Mute" onclick="TalkSyncUI.toggleMicMute()">
+                    <span id="mic-icon">🎤</span>
+                </button>
+                <button id="btn-session-toggle" class="btn-primary btn-start" onclick="TalkSyncUI.toggleSession()">
+                    <span id="session-btn-icon">▶</span>
+                    <span id="session-btn-text">START SESSION</span>
+                </button>
+            </div>
+
+            <!-- Quick Text Input Bar -->
+            <div class="dock-center">
+                <div class="text-input-wrapper">
+                    <input type="text" id="text-input-field" class="text-input-control" placeholder="Type text to translate..." onkeypress="TalkSyncUI.handleTextKeyPress(event)">
+                    <button id="btn-send-text" class="btn-send" onclick="TalkSyncUI.submitText()">Send ↵</button>
+                </div>
+            </div>
+        </footer>
+
+        <!-- 5. SETTINGS MODAL DRAWER -->
+        <div id="settings-modal" class="modal-overlay hidden" onclick="TalkSyncUI.onModalOverlayClick(event, 'settings-modal')">
+            <div class="modal-card glass-modal">
+                <div class="modal-header">
+                    <h2>Audio & AI Settings</h2>
+                    <button class="btn-close" onclick="TalkSyncUI.toggleSettingsModal(false)">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label for="setting-vad-thresh">VAD Sensitivity Threshold (0.1 - 0.9):</label>
+                        <input type="range" id="setting-vad-thresh" min="0.1" max="0.9" step="0.05" value="0.5" oninput="document.getElementById('vad-val').innerText = this.value">
+                        <span id="vad-val" class="slider-value">0.50</span>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="setting-rms-gate">RMS Noise Gate (0.0001 - 0.0050):</label>
+                        <input type="range" id="setting-rms-gate" min="0.0001" max="0.005" step="0.0001" value="0.0003" oninput="document.getElementById('rms-val').innerText = this.value">
+                        <span id="rms-val" class="slider-value">0.0003</span>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="select-audio-input">Audio Input Device:</label>
+                        <select id="select-audio-input" class="select-input modal-select">
+                            <option value="default">Default Input Microphone</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="select-audio-output">Audio Output Device:</label>
+                        <select id="select-audio-output" class="select-input modal-select">
+                            <option value="default">Default Output Speaker</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group checkbox-group" style="flex-direction: row; align-items: center; justify-content: space-between;">
+                        <label for="setting-loopback">Enable Loopback Capture (Computer Audio):</label>
+                        <input type="checkbox" id="setting-loopback" class="checkbox-control">
+                    </div>
+
+                    <div class="setting-group checkbox-group" style="flex-direction: row; align-items: center; justify-content: space-between;">
+                        <label for="setting-virtual-mic">Enable Virtual Mic Output (VB-Cable):</label>
+                        <input type="checkbox" id="setting-virtual-mic" class="checkbox-control">
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="setting-keywords">Custom Domain Keywords (Comma Separated):</label>
+                        <textarea id="setting-keywords" class="textarea-control" rows="3" placeholder="e.g. TalkSync, PyWebView, FasterWhisper, DeepL"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" onclick="TalkSyncUI.toggleSettingsModal(false)">Cancel</button>
+                    <button class="btn-primary" onclick="TalkSyncUI.saveSettings()">Save Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 6. HISTORY MODAL DRAWER -->
+        <div id="history-modal" class="modal-overlay hidden" onclick="TalkSyncUI.onModalOverlayClick(event, 'history-modal')">
+            <div class="modal-card glass-modal modal-large">
+                <div class="modal-header">
+                    <h2>Session History</h2>
+                    <button class="btn-close" onclick="TalkSyncUI.toggleHistoryModal(false)">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="history-controls">
+                        <button class="btn-secondary" onclick="TalkSyncUI.loadHistory()">🔄 Refresh History</button>
+                    </div>
+                    <div id="history-modal-list" class="history-modal-list">
+                        <p class="empty-state">No history items loaded.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="waveform.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

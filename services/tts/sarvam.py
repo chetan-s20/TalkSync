@@ -63,15 +63,33 @@ class SarvamTTS(BaseTTS):
         self._speaker = getattr(settings, "sarvam_voice", "meera")
         self._lang = getattr(settings, "sarvam_lang", "hi-IN")
         self._timeout = getattr(settings, "sarvam_timeout_s", 30.0)
+        self._client = None
+
+    async def _get_client(self):
+        if self._client is None or getattr(self._client, "is_closed", False):
+            import httpx
+            timeout = httpx.Timeout(connect=10.0, read=self._timeout, write=10.0, pool=5.0)
+            limits = httpx.Limits(max_keepalive_connections=20, max_connections=50)
+            try:
+                self._client = httpx.AsyncClient(timeout=timeout, limits=limits)
+            except Exception:
+                self._client = create_async_client(timeout=self._timeout)
+        return self._client
 
     async def start(self) -> None:
         if self._api_key:
             logger.info(f"Sarvam TTS ready: speaker={self._speaker}, lang={self._lang}")
         else:
             logger.warning("Sarvam API key not configured")
+        await self._get_client()
 
     async def stop(self) -> None:
-        pass
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
 
     # Valid bulbul:v3 speakers (from https://docs.sarvam.ai/api/getting-started/models/bulbul)
     _VALID_SPEAKERS = {
@@ -132,67 +150,50 @@ class SarvamTTS(BaseTTS):
         import asyncio as _asyncio
         import httpx as _httpx
 
+        client = await self._get_client()
         last_err = None
-        # Strategy: try direct (no proxy) first — proxy often drops Sarvam connections
-        # Then fall back to proxy on failure
-        connection_configs = [
-            {"proxy": None, "label": "direct"},
-            {"proxy": "http://192.168.0.1:8090", "label": "proxy"},
-        ]
 
-        for attempt, cfg in enumerate(connection_configs * 2):  # up to 4 total attempts
+        for attempt in range(2):
             try:
-                timeout = _httpx.Timeout(connect=10.0, read=self._timeout, write=10.0, pool=5.0)
-                proxy = cfg["proxy"]
+                resp = await client.post(SARVAM_URL, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"Sarvam API error {resp.status_code}: {resp.text[:200]}"
+                    )
+                    return self._silence()
+
+                data = resp.json()
+                audios = data.get("audios", [])
+                if not audios:
+                    logger.warning("Sarvam returned empty audios list")
+                    return self._silence()
+
+                wav_bytes = base64.b64decode(audios[0])
+                if not wav_bytes:
+                    return self._silence()
+
                 try:
-                    client = _httpx.AsyncClient(proxy=proxy, timeout=timeout)
-                except TypeError:
-                    # Older httpx uses proxies dict
-                    proxies = {"http://": proxy, "https://": proxy} if proxy else None
-                    client = _httpx.AsyncClient(proxies=proxies, timeout=timeout)
+                    audio, sr = _wav_bytes_to_float32(wav_bytes)
+                except Exception as e:
+                    logger.warning(f"WAV parse failed, trying raw float32: {e}")
+                    audio = np.frombuffer(wav_bytes, dtype=np.float32)
+                    sr = 8000
 
-                async with client:
-                    resp = await client.post(SARVAM_URL, json=payload, headers=headers)
-                    if resp.status_code != 200:
-                        logger.warning(
-                            f"Sarvam API error {resp.status_code} [{cfg['label']}]: {resp.text[:200]}"
-                        )
-                        return self._silence()
+                if len(audio) == 0:
+                    return self._silence()
 
-                    data = resp.json()
-                    audios = data.get("audios", [])
-                    if not audios:
-                        logger.warning("Sarvam returned empty audios list")
-                        return self._silence()
-
-                    wav_bytes = base64.b64decode(audios[0])
-                    if not wav_bytes:
-                        return self._silence()
-
-                    try:
-                        audio, sr = _wav_bytes_to_float32(wav_bytes)
-                    except Exception as e:
-                        logger.warning(f"WAV parse failed, trying raw float32: {e}")
-                        audio = np.frombuffer(wav_bytes, dtype=np.float32)
-                        sr = 8000
-
-                    if len(audio) == 0:
-                        return self._silence()
-
-                    logger.info(
-                        f"Sarvam TTS ok [{cfg['label']}]: lang={target_lang_code}, speaker={speaker}, "
-                        f"sr={sr}, samples={len(audio)}, dur={len(audio)/sr*1000:.0f}ms"
-                    )
-                    return SynthesisResult(
-                        audio_data=audio.tobytes(),
-                        sample_rate=sr,
-                        duration_ms=(len(audio) / sr) * 1000,
-                    )
+                logger.info(
+                    f"Sarvam TTS ok: lang={target_lang_code}, speaker={speaker}, "
+                    f"sr={sr}, samples={len(audio)}, dur={len(audio)/sr*1000:.0f}ms"
+                )
+                return SynthesisResult(
+                    audio_data=audio.tobytes(),
+                    sample_rate=sr,
+                    duration_ms=(len(audio) / sr) * 1000,
+                )
             except Exception as e:
                 last_err = e
-                logger.warning(f"Sarvam TTS attempt {attempt+1} [{cfg['label']}] failed: {e}")
-                if attempt < 3:
-                    await _asyncio.sleep(1.0)
+                logger.warning(f"Sarvam TTS attempt {attempt+1} failed: {e}")
 
         logger.warning(f"Sarvam TTS all attempts failed: {last_err}")
         return self._silence()

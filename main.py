@@ -16,9 +16,9 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-import customtkinter as ctk
-
 from app.application import Application
+from app.bridge import ApiBridge
+from ui.webview_window import WebviewWindowManager
 from utils.logger import get_logger, set_level
 
 logger = get_logger("main")
@@ -28,7 +28,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="TalkSync AI")
     parser.add_argument("--source-lang", default="EN")
     parser.add_argument("--target-lang", default="HI")
-    parser.add_argument("--mode", default="two_way", choices=["one_way", "two_way"])
+    parser.add_argument("--mode", default="two_way", choices=["one_way", "two_way", "1-way", "2-way"])
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
@@ -45,21 +45,27 @@ def main():
     settings.translation_mode = args.mode
 
     pipeline = app.build_pipeline()
+    api_bridge = ApiBridge(application=app)
 
-    from ui.main_window import MainWindow
-    window = MainWindow(pipeline, settings)
-    app.set_main_window(window)
+    window_manager = WebviewWindowManager(api_bridge=api_bridge, settings=settings)
+    window_manager.create_window()
+    app.set_main_window(window_manager.window)
 
     def shutdown(signum, frame):
         logger.info("Shutdown signal received")
-        if pipeline.running:
-            pipeline.running = False
-        window.after(100, window.destroy)
+        if api_bridge.active:
+            api_bridge.stop_session()
+        if window_manager.window:
+            try:
+                window_manager.window.destroy()
+            except Exception:
+                pass
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    window.mainloop()
+    logger.info("Starting TalkSync AI PyWebView application...")
+    window_manager.start(debug=args.debug)
 
 
 if __name__ == "__main__":

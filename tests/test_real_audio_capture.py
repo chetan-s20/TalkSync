@@ -5,6 +5,7 @@ Tests microphone and loopback audio capture without errors.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Optional
 
@@ -47,7 +48,7 @@ class TestRealAudioCapture:
         print(f"Type: {dev_type}")
         print(f"Device: {device}")
 
-        assert dev_type in ("WASAPI", "sounddevice")
+        assert dev_type in ("WASAPI", "sounddevice", "Stereo Mix")
 
     def test_find_stereo_mix(self):
         """Verify Stereo Mix device can be found."""
@@ -68,6 +69,7 @@ class TestRealAudioCapture:
         assert stereo_mix['max_input_channels'] > 0
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("RUN_REAL_HARDWARE_TESTS"), reason="Requires physical hardware audio input")
     async def test_microphone_capture(self):
         """
         Test real-time microphone audio capture.
@@ -118,6 +120,7 @@ class TestRealAudioCapture:
             raise
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("RUN_REAL_HARDWARE_TESTS"), reason="Requires physical hardware audio input")
     async def test_loopback_capture(self):
         """
         Test real-time loopback (computer audio) capture.
@@ -174,6 +177,7 @@ class TestRealAudioCapture:
             raise
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("RUN_REAL_HARDWARE_TESTS"), reason="Requires physical hardware audio input")
     async def test_dual_capture_mic_and_loopback(self):
         """
         Test simultaneous microphone and loopback capture (meeting mode).

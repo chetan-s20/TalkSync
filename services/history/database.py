@@ -12,7 +12,7 @@ class HistoryDatabase:
         self._conn: Optional[sqlite3.Connection] = None
 
     def connect(self) -> None:
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

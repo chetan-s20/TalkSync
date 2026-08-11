@@ -25,18 +25,19 @@ class AudioSettings(BaseSettings):
 
 class VADSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="vad_", extra="ignore")
-    threshold: float = Field(default=0.55)
+    threshold: float = Field(default=0.35)
     min_speech_duration_ms: int = Field(default=250)
     min_silence_duration_ms: int = Field(default=150)
     speech_frames_to_activate: int = Field(default=3)
     silence_frames_to_deactivate: int = Field(default=5)
+    rms_gate_threshold: float = Field(default=0.0003)
 
 
 class STTSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="stt_", extra="ignore")
     model: str = Field(default="Systran/faster-whisper-small")
-    beam_size: int = Field(default=5)
-    best_of: int = Field(default=5)
+    beam_size: int = Field(default=1)
+    best_of: int = Field(default=1)
     temperature: float = Field(default=0.0)
     no_speech_threshold: float = Field(default=0.75)
     log_prob_threshold: float = Field(default=-1.0)
@@ -47,8 +48,9 @@ class STTSettings(BaseSettings):
     device: str = Field(default="auto")
     compute_type: str = Field(default="float16")
     vad_filter: bool = Field(default=False)
-    rms_gate_threshold: float = Field(default=0.002)
-    min_word_count: int = Field(default=2)
+    rms_gate_threshold: float = Field(default=0.0003)
+    min_word_count: int = Field(default=1)
+    refinement: bool = Field(default=True)
 
 
 class TranslationSettings(BaseSettings):
@@ -59,7 +61,7 @@ class TranslationSettings(BaseSettings):
     source_lang: str = Field(default="EN")
     target_lang: str = Field(default="HI")
     deepl_api_key: str = Field(default="")
-    proxy_url: str = Field(default="http://192.168.0.1:8090")
+    proxy_url: Optional[str] = Field(default=None)
     timeout_s: float = Field(default=5.0)
 
 
@@ -101,6 +103,22 @@ class HistorySettings(BaseSettings):
     db_path: str = Field(default="talksync.db")
 
 
+class OpenAISettings(BaseSettings):
+    """OpenAI API configuration for cloud STT (gpt-4o-transcribe)."""
+    model_config = SettingsConfigDict(env_prefix="openai_", extra="ignore")
+    api_key: str = Field(default="")
+    stt_model: str = Field(default="gpt-4o-transcribe")
+    proxy_url: Optional[str] = Field(default=None)
+
+
+class GroqSettings(BaseSettings):
+    """Groq API configuration for ultra-low latency Groq STT (whisper-large-v3-turbo)."""
+    model_config = SettingsConfigDict(env_prefix="groq_", extra="ignore")
+    api_key: str = Field(default="")
+    loopback_api_key: str = Field(default="")
+    stt_model: str = Field(default="whisper-large-v3-turbo")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="talksync_", extra="ignore")
     audio: AudioSettings = Field(default_factory=AudioSettings)
@@ -111,6 +129,12 @@ class Settings(BaseSettings):
     subtitle: SubtitleSettings = Field(default_factory=SubtitleSettings)
     denoiser: DenoiserSettings = Field(default_factory=DenoiserSettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
+    openai: OpenAISettings = Field(default_factory=OpenAISettings)
+    groq: GroqSettings = Field(default_factory=GroqSettings)
+    stt_engine: str = Field(default="groq")
+    groq_api_key: str = Field(default="")
+    groq_loopback_api_key: str = Field(default="")
+    groq_stt_model: str = Field(default="whisper-large-v3-turbo")
     source_lang: str = Field(default="EN")
     target_lang: str = Field(default="HI")
     translation_mode: str = Field(default="two_way")

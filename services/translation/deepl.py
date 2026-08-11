@@ -15,30 +15,33 @@ class DeepLTranslator(BaseTranslator):
         self._client = None
 
     async def start(self) -> None:
+        api_key = getattr(self.settings, "deepl_api_key", "") or ""
+        if not api_key:
+            logger.warning("DeepL API key not configured")
+            raise ValueError("DeepL API key not configured")
+
         try:
             import deepl
             import asyncio
-            api_key = getattr(self.settings, "deepl_api_key", "") or ""
-            if not api_key:
-                logger.warning("DeepL API key not configured")
-                return
 
-            # Try proxy first only if it is reachable
+            # Try proxy first only if it is reachable via fast single socket check (1.0s timeout)
             proxy_dict = get_proxy_dict()
-            proxy_url = proxy_dict.get("https://")
+            proxy_url = getattr(self.settings, "proxy_url", None) or proxy_dict.get("https://")
             use_proxy = False
             if proxy_url:
                 try:
                     import socket
                     from urllib.parse import urlparse
-                    parsed = urlparse(proxy_url)
+                    url_to_parse = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
+                    parsed = urlparse(url_to_parse)
                     host = parsed.hostname
-                    port = parsed.port or 80
-                    # Quick socket connection test (1.0s timeout)
-                    with socket.create_connection((host, port), timeout=1.0):
-                        use_proxy = True
-                except Exception:
-                    logger.debug("DeepL proxy is unreachable — falling back to direct connection")
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    if host:
+                        # Fast socket connectivity check (1s timeout)
+                        with socket.create_connection((host, port), timeout=1.0):
+                            use_proxy = True
+                except Exception as check_err:
+                    logger.debug(f"DeepL proxy check failed ({check_err}) — falling back to direct connection")
 
             if use_proxy:
                 try:
@@ -58,6 +61,7 @@ class DeepLTranslator(BaseTranslator):
         except Exception as e:
             logger.warning(f"DeepL init failed: {e}")
             self._client = None
+            raise RuntimeError(f"DeepL init failed: {e}") from e
 
     async def stop(self) -> None:
         self._client = None

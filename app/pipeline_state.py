@@ -6,30 +6,55 @@ from typing import Optional
 
 import numpy as np
 
-SPEECH_FRAMES_TO_ACTIVATE = 2
-SILENCE_FRAMES_TO_DEACTIVATE = 8
+from collections import deque
+
+SPEECH_FRAMES_TO_ACTIVATE = 1
+SILENCE_FRAMES_TO_DEACTIVATE = 18
 MIN_SPEECH_SAMPLES = 4000  # 250ms at 16kHz — balances latency & hallucination reduction
 
 
 class SpeechTracker:
-    def __init__(self, threshold: float = 0.6):
+    def __init__(self, threshold: float = 0.6, pre_roll_chunks: int = 15):
         self._threshold = threshold
         self._speech_active = False
         self._speech_frames = 0
         self._silence_frames = 0
+        self._ring_buffer: deque[np.ndarray] = deque(maxlen=pre_roll_chunks)  # ~450ms pre-activation audio
+        self._speech_body_frames: list[np.ndarray] = []
 
-    def update(self, is_speech: bool) -> bool:
+    def update(self, is_speech: bool, frame: Optional[np.ndarray] = None) -> bool:
+        if frame is not None:
+            self._ring_buffer.append(frame)
+
         if is_speech:
             self._speech_frames += 1
             self._silence_frames = 0
+            if frame is not None:
+                self._speech_body_frames.append(frame)
             if not self._speech_active and self._speech_frames >= SPEECH_FRAMES_TO_ACTIVATE:
                 self._speech_active = True
         else:
             self._silence_frames += 1
             self._speech_frames = 0
-            if self._speech_active and self._silence_frames >= SILENCE_FRAMES_TO_DEACTIVATE:
-                self._speech_active = False
+            if self._speech_active:
+                if frame is not None:
+                    self._speech_body_frames.append(frame)
+                if self._silence_frames >= SILENCE_FRAMES_TO_DEACTIVATE:
+                    self._speech_active = False
+            else:
+                self._speech_body_frames.clear()
+
         return self._speech_active
+
+    def get_and_clear_pending_frames(self) -> list[np.ndarray]:
+        # Prepend the pre-roll ring buffer (~450ms preceding speech activation) + initial speech frames
+        pre_roll = list(self._ring_buffer)
+        body = list(self._speech_body_frames)
+        self._speech_body_frames.clear()
+        self._ring_buffer.clear()
+        
+        frames = pre_roll + [f for f in body if not any(np.array_equal(f, pr) for pr in pre_roll)]
+        return frames
 
     @property
     def speech_active(self) -> bool:
@@ -47,6 +72,8 @@ class SpeechTracker:
         self._speech_active = False
         self._speech_frames = 0
         self._silence_frames = 0
+        self._ring_buffer.clear()
+        self._speech_body_frames.clear()
 
 
 @dataclass
@@ -61,10 +88,10 @@ class SttJob:
 
 
 class PerSourceAudioBuffer:
-    def __init__(self, source: str, sample_rate: int = 16000, max_duration_s: float = 10.0):
+    def __init__(self, source: str = "mic", sample_rate: int = 16000, max_duration_s: float = 10.0, max_samples: Optional[int] = None):
         self.source = source
         self.sample_rate = sample_rate
-        self.max_samples = int(max_duration_s * sample_rate)
+        self.max_samples = max_samples if max_samples is not None else int(max_duration_s * sample_rate)
         self._segments: list[np.ndarray] = []
         self._total_samples = 0
         self._partial_offset = 0
@@ -72,6 +99,13 @@ class PerSourceAudioBuffer:
         self._last_final_text = ""
         self._last_partial_text = ""
         self._last_feed_time = 0.0
+
+    def get_audio_and_clear(self) -> np.ndarray:
+        if not self._segments:
+            return np.array([], dtype=np.float32)
+        full = np.concatenate(self._segments)
+        self.clear()
+        return full
 
     def append(self, audio: np.ndarray) -> None:
         self._segments.append(audio)

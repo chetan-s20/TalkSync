@@ -20,8 +20,10 @@ class TranscriptPanel(ctk.CTkFrame):
         lang_pair: str,
         model_name: str = "TalkSync AI",
         speaker_active: bool = False,
+        mic_active: Optional[bool] = None,
         on_lang_click: Optional[Callable] = None,
         on_speaker_click: Optional[Callable] = None,
+        on_mic_click: Optional[Callable] = None,
         on_options_click: Optional[Callable] = None,
         **kwargs,
     ):
@@ -36,6 +38,7 @@ class TranscriptPanel(ctk.CTkFrame):
 
         self.on_lang_click = on_lang_click
         self.on_speaker_click = on_speaker_click
+        self.on_mic_click = on_mic_click
         self.on_options_click = on_options_click
 
         self.grid_rowconfigure(2, weight=1)
@@ -60,9 +63,26 @@ class TranscriptPanel(ctk.CTkFrame):
         )
         self.lang_btn.pack(side="left")
 
-        # Right Action Buttons: Speaker 🔊 & More Options •••
+        # Right Action Buttons: Mic (if enabled), Speaker 🔊 & More Options •••
         actions = ctk.CTkFrame(header, fg_color="transparent")
         actions.pack(side="right")
+
+        self._mic_active = mic_active
+        if self._mic_active is not None:
+            mic_color = ACCENT_ORANGE if self._mic_active else "#EF4444"
+            self.mic_btn = ctk.CTkButton(
+                actions,
+                text="🎙️",
+                font=ctk.CTkFont(size=14),
+                text_color=mic_color,
+                fg_color="transparent",
+                hover_color="#F3F4F6",
+                width=30,
+                height=30,
+                corner_radius=15,
+                command=self._on_mic_btn_click,
+            )
+            self.mic_btn.pack(side="left", padx=2)
 
         self._speaker_active = speaker_active
         spk_color = ACCENT_ORANGE if self._speaker_active else "#6B7280"
@@ -222,6 +242,30 @@ class TranscriptPanel(ctk.CTkFrame):
         active = self.toggle_speaker()
         if self.on_speaker_click:
             self.on_speaker_click(active)
+
+    def toggle_mic(self) -> bool:
+        if self._mic_active is None:
+            return False
+        self._mic_active = not self._mic_active
+        color = ACCENT_ORANGE if self._mic_active else "#EF4444"
+        self.mic_btn.configure(text_color=color)
+        return self._mic_active
+
+    def set_mic(self, active: bool) -> None:
+        if self._mic_active is None:
+            return
+        self._mic_active = active
+        color = ACCENT_ORANGE if self._mic_active else "#EF4444"
+        self.mic_btn.configure(text_color=color)
+
+    @property
+    def mic_active(self) -> bool:
+        return bool(self._mic_active)
+
+    def _on_mic_btn_click(self) -> None:
+        active = self.toggle_mic()
+        if self.on_mic_click:
+            self.on_mic_click(active)
 
     def _on_options_btn_click(self) -> None:
         if self.on_options_click:

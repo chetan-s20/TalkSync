@@ -1,36 +1,27 @@
-# Secrets / environment
+# Environment & Secrets
 .env
-.env.*
-*.key
+*.env
 *.pem
+*.key
 
-# Python
+# Database
+*.db
+*.sqlite
+*.sqlite3
+talksync/talksync.db
+
+# Logs & Output
+*.log
+logs/
+talksync/logs/
+talksync/error.log
+talksync/output.log
+
+talksync/.agents
+
+# Python Cache & Virtual Environments
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-venv*/
-*.egg-info/
 .pytest_cache/
-build/
-dist/
-
-# Logs & runtime artifacts
-logs/
-*.log
-stdout.txt
-stderr.txt
-pipeline_out.txt
-pipeline_err.txt
-install_log.txt
-
-# History DB
-history/talksync_history.db
-talksync.db
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-scripts/

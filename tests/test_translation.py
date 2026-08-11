@@ -330,12 +330,33 @@ class TestDeepL:
             settings.timeout_s = 5.0
 
             with patch("utils.proxy.get_proxy_dict", return_value={"https://": "https://proxy.company.com:3128"}):
+                with patch("socket.create_connection"):
+                    translator = DeepLTranslator(settings)
+                    await translator.start()
+
+                    mock_deepl.assert_called_once()
+                    _, kwargs = mock_deepl.call_args
+                    assert "proxy" in kwargs
+                    assert kwargs["proxy"] == "https://proxy.company.com:3128"
+
+    @pytest.mark.asyncio
+    async def test_deepl_proxy_unreachable_fast_fallback(self):
+        with patch("deepl.Translator") as mock_deepl:
+            mock_client = MagicMock()
+            mock_client.get_usage.return_value = None
+            mock_deepl.return_value = mock_client
+
+            settings = MagicMock()
+            settings.deepl_api_key = "key-with-proxy"
+            settings.proxy_url = "http://192.168.0.1:8090"
+            settings.timeout_s = 5.0
+
+            with patch("socket.create_connection", side_effect=OSError("Proxy unreachable")):
                 translator = DeepLTranslator(settings)
                 await translator.start()
 
-                mock_deepl.assert_called_once()
-                _, kwargs = mock_deepl.call_args
-                assert "proxy_url" in kwargs
+                mock_deepl.assert_called_once_with("key-with-proxy")
+                assert translator._client is not None
 
     @pytest.mark.asyncio
     async def test_deepl_fallback_on_error(self):
@@ -348,12 +369,10 @@ class TestDeepL:
             settings.timeout_s = 5.0
 
             translator = DeepLTranslator(settings)
-            await translator.start()
+            with pytest.raises(RuntimeError):
+                await translator.start()
 
             assert translator._client is None
-
-            result = await translator.translate("Hello", "en", "fr")
-            assert result.translated_text == "Hello"
 
     @pytest.mark.asyncio
     async def test_deepl_no_api_key(self):
@@ -363,11 +382,10 @@ class TestDeepL:
         settings.timeout_s = 5.0
 
         translator = DeepLTranslator(settings)
-        await translator.start()
+        with pytest.raises((ValueError, RuntimeError)):
+            await translator.start()
 
         assert translator._client is None
-        result = await translator.translate("Hello", "en", "fr")
-        assert result.translated_text == "Hello"
 
     @pytest.mark.asyncio
     async def test_deepl_translate_error_returns_original(self):

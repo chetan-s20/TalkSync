@@ -53,9 +53,9 @@ class FasterWhisperSTT:
         self._compression_ratio_threshold = compression_ratio_threshold if compression_ratio_threshold is not None else getattr(stt_settings, "compression_ratio_threshold", 2.0)
         self._log_prob_threshold = log_prob_threshold if log_prob_threshold is not None else getattr(stt_settings, "log_prob_threshold", -1.0)
         self._condition_on_previous_text = condition_on_previous_text if condition_on_previous_text is not None else getattr(stt_settings, "condition_on_previous_text", False)
-        self._initial_prompt = initial_prompt if initial_prompt is not None else (getattr(stt_settings, "initial_prompt", None) or "TalkSync AI speech translation transcription.")
-        self._rms_gate_threshold = rms_gate_threshold if rms_gate_threshold is not None else getattr(stt_settings, "rms_gate_threshold", 0.002)
-        self._min_word_count = min_word_count if min_word_count is not None else getattr(stt_settings, "min_word_count", 2)
+        self._initial_prompt = initial_prompt if initial_prompt is not None else getattr(stt_settings, "initial_prompt", None)
+        self._rms_gate_threshold = rms_gate_threshold if rms_gate_threshold is not None else getattr(stt_settings, "rms_gate_threshold", 0.0003)
+        self._min_word_count = min_word_count if min_word_count is not None else getattr(stt_settings, "min_word_count", 1)
 
         self._model = None
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
@@ -187,9 +187,11 @@ class FasterWhisperSTT:
             audio = np.frombuffer(audio, dtype=np.float32).copy()
 
         # 1. RMS Energy Gate: reject silent/low-energy audio before STT (run on raw signal)
+        # 1. RMS Energy Gate: reject silent/low-energy noise audio before STT
         raw_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-        if raw_rms < self._rms_gate_threshold:
-            logger.debug(f"STT: RMS gate triggered ({raw_rms:.6f} < {self._rms_gate_threshold}) — rejecting silence")
+        gate_thresh = max(0.003, self._rms_gate_threshold)
+        if raw_rms < gate_thresh:
+            logger.debug(f"STT: RMS gate triggered ({raw_rms:.6f} < {gate_thresh}) — rejecting silence")
             return None
 
         # DSP Step 1: 100Hz Butterworth Highpass Filter to remove low-frequency rumble
@@ -202,13 +204,13 @@ class FasterWhisperSTT:
         except Exception as filter_err:
             logger.debug(f"STT [Filter]: Highpass filter skipped: {filter_err}")
 
-        # DSP Step 2: Automatic Gain Control (AGC) - Normalize signal RMS to 0.15
+        # DSP Step 2: Automatic Gain Control (AGC) - Normalize signal RMS to 0.2 (skipping sub-threshold noise)
         rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-        if rms > 1e-4:
-            target_rms = 0.15
+        if rms >= 0.003:
+            target_rms = 0.2
             gain = target_rms / rms
             if gain > 1.0:
-                gain = min(gain, 4.0)  # limit amplification to 4.0x
+                gain = min(gain, 6.0)  # limit amplification to 6.0x
                 audio = np.clip(audio * gain, -1.0, 1.0)
                 logger.info(f"STT [AGC]: Amplified signal (gain={gain:.2f}x, rms={rms:.4f} -> target={target_rms:.2f})")
             elif gain < 1.0:
@@ -267,6 +269,9 @@ class FasterWhisperSTT:
 
                 detected_lang = getattr(info, "language", "") or ""
                 lang_prob = float(getattr(info, "language_probability", 0.0) or 0.0)
+                if lang is not None:
+                    detected_lang = lang
+                    lang_prob = 1.0
                 return TranscriptionSegment(
                     text=text, is_final=is_final,
                     start_time=datetime.now(), end_time=datetime.now(),

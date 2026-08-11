@@ -34,7 +34,7 @@ class TestEmpiricalNoiseFloorGating:
     @pytest.mark.parametrize("vad_cls", [ServicesSileroVAD, DirectSileroVAD])
     def test_noise_floor_below_threshold_0049_is_gated(self, vad_cls):
         """Verify static/audio with RMS 0.0049 (< 0.005) is gated immediately without calling VAD model."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = vad_cls(settings)
         vad._model = MagicMock()
         vad._running = True
@@ -62,7 +62,7 @@ class TestEmpiricalNoiseFloorGating:
     @pytest.mark.parametrize("vad_cls", [ServicesSileroVAD, DirectSileroVAD])
     def test_noise_floor_above_threshold_0051_passes_gate(self, vad_cls):
         """Verify audio with RMS 0.0051 (>= 0.005) passes noise gate and invokes VAD model evaluation."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = vad_cls(settings)
         vad._model = MagicMock()
         vad._running = True
@@ -89,7 +89,7 @@ class TestEmpiricalNoiseFloorGating:
     @pytest.mark.parametrize("vad_cls", [ServicesSileroVAD, DirectSileroVAD])
     def test_noise_floor_exact_boundary(self, vad_cls):
         """Verify sharp transition boundary at RMS 0.00499 vs RMS 0.00501."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = vad_cls(settings)
         vad._model = MagicMock()
         vad._running = True
@@ -113,7 +113,7 @@ class TestEmpiricalNoiseFloorGating:
     @pytest.mark.parametrize("vad_cls", [ServicesSileroVAD, DirectSileroVAD])
     def test_noise_floor_fallback_heuristic_when_model_is_none(self, vad_cls):
         """Verify noise floor gating in fallback heuristic mode when _model is None."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = vad_cls(settings)
         vad._model = None  # Force fallback heuristic mode
         vad._running = True
@@ -147,9 +147,11 @@ class TestEmpiricalDeviceCandidateFallback:
         audio_input._loop = asyncio.get_running_loop()
 
         # Querying device 99 fails
-        def mock_query_devices(dev):
+        def mock_query_devices(dev=None):
             if dev == 99:
                 raise Exception("PortAudio device 99 query error")
+            if dev is None:
+                return [{"name": f"Device {i}", "max_input_channels": 2, "default_samplerate": 44100} for i in range(100)]
             return {"default_samplerate": 44100, "max_input_channels": 2}
 
         # InputStream succeeds only when device=None (default fallback)

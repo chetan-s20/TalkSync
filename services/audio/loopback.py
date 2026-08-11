@@ -5,39 +5,112 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
+from utils.device import find_best_input_device, find_best_output_device
 from utils.logger import get_logger
 
 logger = get_logger("loopback")
 
 
-def find_wasapi_loopback() -> Optional[str]:
+def find_wasapi_loopback(output_device_id: Optional[int] = None) -> Optional[str]:
     """Find WASAPI loopback device via soundcard (native Windows loopback).
+    Prefers the loopback endpoint corresponding to the active output device (e.g. headphones).
     Returns the device name if found, None otherwise."""
     try:
         import soundcard as sc
-        for m in sc.all_microphones(include_loopback=True):
-            if m.isloopback:
-                logger.info(f"Found WASAPI loopback: {m.name}")
+        target_keyword = "headphone"
+        if output_device_id is not None:
+            try:
+                info = sd.query_devices(output_device_id)
+                dev_name = (info.get("name", "") or "").lower()
+                if "headphone" in dev_name or "headset" in dev_name:
+                    target_keyword = "headphone"
+                elif "speaker" in dev_name:
+                    target_keyword = "speaker"
+            except Exception:
+                pass
+        else:
+            try:
+                best_out = find_best_output_device()
+                if best_out is not None:
+                    info = sd.query_devices(best_out)
+                    dev_name = (info.get("name", "") or "").lower()
+                    if "headphone" in dev_name or "headset" in dev_name:
+                        target_keyword = "headphone"
+            except Exception:
+                pass
+
+        loopback_mics = [m for m in sc.all_microphones(include_loopback=True) if getattr(m, "isloopback", False)]
+
+        # 0. Check if Windows default speaker has an exact WASAPI loopback match
+        try:
+            def_spk = sc.default_speaker()
+            if def_spk:
+                for m in loopback_mics:
+                    if m.name.lower() == def_spk.name.lower() or def_spk.name.lower() in m.name.lower() or m.name.lower() in def_spk.name.lower():
+                        logger.info(f"Found WASAPI loopback matching Windows default speaker: {m.name}")
+                        return m.name
+        except Exception as e:
+            logger.debug(f"Default speaker lookup skipped: {e}")
+
+        # 1. Prefer WASAPI loopback matching target output keyword (headphone/headset)
+        for m in loopback_mics:
+            name_lower = m.name.lower()
+            if target_keyword in name_lower or (target_keyword == "headphone" and "headset" in name_lower):
+                logger.info(f"Found targeted WASAPI loopback for active output '{target_keyword}': {m.name}")
                 return m.name
+
+        # 2. If headphone WASAPI loopback was specifically preferred but not found via soundcard,
+        # fallback to the first available WASAPI loopback before returning None.
+        if target_keyword == "headphone":
+            if loopback_mics:
+                logger.info(f"No headphone-specific WASAPI loopback found; falling back to first available WASAPI loopback: {loopback_mics[0].name}")
+                return loopback_mics[0].name
+            logger.info("No headphone-specific WASAPI loopback endpoint found via soundcard; falling back to Stereo Mix")
+            return None
+
+        if loopback_mics:
+            logger.info(f"Found WASAPI loopback: {loopback_mics[0].name}")
+            return loopback_mics[0].name
     except Exception as e:
         logger.debug(f"soundcard WASAPI loopback not available: {e}")
     return None
 
 
 def find_stereo_mix() -> Optional[int]:
-    """Find Stereo Mix — the primary loopback capture device on this system."""
+    """Find Stereo Mix — the primary loopback capture device on this system.
+
+    Two-pass search:
+    Pass 1: Prefer the Realtek HD Audio / HAP driver variant (more reliable with headphones).
+    Pass 2: Fall back to any Stereo Mix device.
+    """
     try:
         devices = sd.query_devices()
     except Exception:
         return None
+
+    hap_candidate: Optional[int] = None
+    generic_candidate: Optional[int] = None
+
     for i, d in enumerate(devices):
         if not isinstance(d, dict):
             continue
         name = (d.get("name", "") or "").lower()
         if d.get("max_input_channels", 0) > 0 and "stereo mix" in name:
-            logger.debug(f"Found Stereo Mix at index {i}: {d.get('name')}")
-            return i
-    return None
+            # Prefer HD Audio / HAP WASAPI driver over generic MME
+            if "hd audio" in name or "hap" in name:
+                if hap_candidate is None:
+                    hap_candidate = i
+                    logger.debug(f"Found HD Audio Stereo Mix (preferred) at index {i}: {d.get('name')}")
+            else:
+                if generic_candidate is None:
+                    generic_candidate = i
+                    logger.debug(f"Found generic Stereo Mix at index {i}: {d.get('name')}")
+
+    result = hap_candidate if hap_candidate is not None else generic_candidate
+    if result is not None:
+        logger.info(f"Stereo Mix loopback resolved to device {result}: {devices[result].get('name')}")
+    return result
+
 
 
 def find_vb_cable() -> Optional[int]:
@@ -59,12 +132,12 @@ def find_vb_cable() -> Optional[int]:
     return None
 
 
-def find_loopback_device() -> Optional[tuple]:
-    """Find best available loopback device. Priority: WASAPI > Stereo Mix > VB-Cable.
+def find_loopback_device(output_device_id: Optional[int] = None) -> Optional[tuple]:
+    """Find best available loopback device. Priority: WASAPI (headphone preferred) > Stereo Mix > VB-Cable.
     Returns (device_id_or_name, type_label) where type_label is 'WASAPI', 'Stereo Mix', or 'VB-Cable'."""
     try:
-        # 1. Prefer WASAPI loopback (soundcard) — captures digital output directly
-        dev = find_wasapi_loopback()
+        # 1. Prefer WASAPI loopback matching active output device (e.g. headphones)
+        dev = find_wasapi_loopback(output_device_id)
         if dev is not None:
             logger.info(f"Resolved loopback device: WASAPI ({dev})")
             return dev, "WASAPI"

@@ -13,7 +13,7 @@ from utils.logger import get_logger
 logger = get_logger("vad")
 
 # Default RMS noise floor — rejects silent chunks before VAD
-RMS_GATE_THRESHOLD = 0.005
+RMS_GATE_THRESHOLD = 0.0003
 
 
 class VADSpeechOutcome(tuple):
@@ -101,17 +101,19 @@ class SileroVAD(BaseVAD):
         audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
 
         rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
-        NOISE_FLOOR_RMS = RMS_GATE_THRESHOLD
+        noise_floor_rms = getattr(self.settings, "rms_gate_threshold", 0.0003)
+        if noise_floor_rms <= 0.0:
+            noise_floor_rms = 0.0003
+
+        # 1. Noise floor gate check: RMS < threshold mutes silent static intervals
+        if rms < noise_floor_rms:
+            return VADSpeechOutcome(False, 0.0)
 
         # Fallback heuristic mode if Silero VAD model is not loaded
         if self._model is None:
-            is_sp = bool(np.mean(np.abs(audio)) > 0.01 and rms >= NOISE_FLOOR_RMS)
+            is_sp = bool(np.mean(np.abs(audio)) > 0.01 and rms >= noise_floor_rms)
             prob = 0.8 if is_sp else 0.2
             return VADSpeechOutcome(is_sp, prob)
-
-        # 1. Noise floor gate check: RMS < threshold mutes silent static intervals
-        if rms < NOISE_FLOOR_RMS:
-            return VADSpeechOutcome(False, 0.0)
 
         threshold = getattr(self.settings, "threshold", 0.5)
 
@@ -153,6 +155,6 @@ class SileroVAD(BaseVAD):
                 chunk=chunk,
             )
         except Exception as e:
-            logger.debug(f"VAD process error: {e}")
+            logger.error(f"VAD process error: {e}", exc_info=True)
             yield VADResult(is_speech=False, confidence=0.0, chunk=chunk)
 

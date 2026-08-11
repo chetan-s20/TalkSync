@@ -1,1 +1,1 @@
-from __future__ import annotations
+"""Integration tests package for TalkSync AI."""

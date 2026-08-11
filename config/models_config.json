@@ -1,22 +1,112 @@
 {
-    "stt": {
-        "model": "Systran/faster-distil-whisper-large-v3",
-        "beam_size": 5
-    },
-    "translation": {
-        "provider": "deepl",
-        "fallback_provider": "argos",
-        "model": "deepl"
-    },
-    "tts": {
-        "piper_voice": "en_US-lessac-medium",
-        "sarvam_voice": "shubh",
-        "sarvam_lang": "hi-IN",
-        "output_sample_rate": 24000
-    },
-    "vad": {
-        "threshold": 0.6,
-        "min_speech_duration_ms": 400,
-        "min_silence_duration_ms": 500
-    }
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "chunk_duration_ms": 30.0,
+    "input_device_id": 1,
+    "output_device_id": 5,
+    "output_sample_rate": 24000,
+    "volume": 1.0,
+    "tts_playback_enabled": true,
+    "tts_voice_name": "Warm Man-D",
+    "playback_delay_s": 0.0,
+    "virtual_mic_enabled": true
+  },
+  "vad": {
+    "threshold": 0.45,
+    "min_speech_duration_ms": 200,
+    "min_silence_duration_ms": 100,
+    "speech_frames_to_activate": 2,
+    "silence_frames_to_deactivate": 3,
+    "rms_gate_threshold": 0.0003
+  },
+  "stt": {
+    "model": "openai",
+    "beam_size": 1,
+    "best_of": 1,
+    "temperature": 0.0,
+    "no_speech_threshold": 0.75,
+    "log_prob_threshold": -1.0,
+    "compression_ratio_threshold": 2.0,
+    "condition_on_previous_text": false,
+    "initial_prompt": null,
+    "avg_logprob_threshold": -1.0,
+    "device": "auto",
+    "compute_type": "float16",
+    "vad_filter": false,
+    "rms_gate_threshold": 0.0003,
+    "min_word_count": 1,
+    "refinement": false
+  },
+  "translation": {
+    "provider": "gpt",
+    "fallback_provider": "argos",
+    "model": "gpt-4o-mini",
+    "source_lang": "EN",
+    "target_lang": "HI",
+    "deepl_api_key": "",
+    "proxy_url": null,
+    "timeout_s": 5.0
+  },
+  "tts": {
+    "model": "openai",
+    "voice": "alloy",
+    "speed": 1.0,
+    "device": "auto",
+    "streaming": true,
+    "sarvam_api_key": "",
+    "sarvam_voice": "shubh",
+    "sarvam_lang": "hi-IN",
+    "sarvam_timeout_s": 30.0,
+    "piper_voice_dir": null
+  },
+  "subtitle": {
+    "enabled": true,
+    "font_size": 20,
+    "opacity": 0.85,
+    "auto_hide_seconds": 5.0,
+    "width": 600,
+    "height": 120,
+    "bg_color": "#1E293B",
+    "original_color": "#94A3B8",
+    "translated_color": "#F8FAFC"
+  },
+  "denoiser": {
+    "enabled": false,
+    "model": "rnnoise"
+  },
+  "history": {
+    "db_path": "talksync.db"
+  },
+  "openai": {
+    "api_key": "",
+    "stt_model": "whisper-1",
+    "proxy_url": null
+  },
+  "groq": {
+    "api_key": "",
+    "loopback_api_key": "",
+    "stt_model": "whisper-large-v3-turbo"
+  },
+  "stt_engine": "groq",
+  "groq_api_key": "",
+  "groq_loopback_api_key": "",
+  "groq_stt_model": "whisper-large-v3-turbo",
+  "source_lang": "EN",
+  "target_lang": "HI",
+  "translation_mode": "two_way",
+  "context_seed": "",
+  "ai_assistant_enabled": true,
+  "keywords": "",
+  "context": "",
+  "theme": "light",
+  "window_width": 1200,
+  "window_height": 800,
+  "log_level": "INFO",
+  "log_to_file": false,
+  "selected_input_device_name": "Microphone Array (Realtek(R) Au",
+  "selected_output_device_name": "Speakers (Realtek(R) Audio)",
+  "loopback_enabled": true,
+  "mic_enabled": true,
+  "spk_enabled": true
 }

@@ -16,9 +16,11 @@ import numpy as np
 import pytest
 
 from app.interfaces import AudioChunk
+from app.pipeline_state import SpeechTracker, PerSourceAudioBuffer
 from config.settings import AudioSettings, VADSettings
 from services.audio.input import SoundDeviceInput
 from services.vad.silero_vad import SileroVAD as ServicesSileroVAD, VADSpeechOutcome
+from utils.device import find_best_input_device, find_best_output_device
 from vad.silero_vad import SileroVAD as RootSileroVAD
 
 
@@ -123,7 +125,7 @@ class TestSileroVADLargeBufferStress:
     @pytest.mark.parametrize("VADClass", [ServicesSileroVAD, RootSileroVAD])
     def test_silero_vad_pure_silence_large_buffers(self, VADClass):
         """Test 2048 and 4096 sample buffers containing pure silent static (RMS < 0.005)."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = VADClass(settings)
         vad._model = MagicMock()
         vad._running = True
@@ -328,3 +330,104 @@ class TestHighThroughputQueueInsertionStress:
         total_sent = num_threads * chunks_per_thread
         assert diag["overflow_count"] == total_sent - 20
         assert diag["total_chunks"] == total_sent
+
+
+class TestFrame1OnsetAndDeviceVerification:
+    """Empirical verification of speech onset frame 1 preservation and Boult Audio Airbass score boost."""
+
+    def test_speech_tracker_frame_1_onset_preservation(self):
+        """Verify frame 1 (speech onset) is captured in pending_frames and retrieved upon activation."""
+        tracker = SpeechTracker()
+        buf = PerSourceAudioBuffer(source="mic")
+
+        frame1 = np.ones(1600, dtype=np.float32) * 0.5
+        frame2 = np.ones(1600, dtype=np.float32) * 0.6
+
+        # Frame 1: speech detected, but speech_active is False (1 frame < SPEECH_FRAMES_TO_ACTIVATE)
+        active1 = tracker.update(is_speech=True, frame=frame1)
+        assert active1 is False
+        assert tracker.speech_active is False
+        assert tracker.just_activated is False
+        # Buffer is empty at this point
+        assert len(buf._segments) == 0
+
+        # Frame 2: speech detected, speech_active becomes True (2 frames >= SPEECH_FRAMES_TO_ACTIVATE)
+        active2 = tracker.update(is_speech=True, frame=frame2)
+        assert active2 is True
+        assert tracker.speech_active is True
+        assert tracker.just_activated is True
+
+        # When just_activated is True, pipeline retrieves and appends all pending frames
+        pending = tracker.get_and_clear_pending_frames()
+        assert len(pending) == 2
+        assert np.array_equal(pending[0], frame1)
+        assert np.array_equal(pending[1], frame2)
+
+        for p in pending:
+            buf.append(p)
+
+        # Confirm both frame 1 and frame 2 are in PerSourceAudioBuffer
+        assert len(buf._segments) == 2
+        assert np.array_equal(buf._segments[0], frame1)
+        assert np.array_equal(buf._segments[1], frame2)
+        assert buf.total_samples == 3200
+
+    def test_speech_tracker_silence_clears_pending_frames(self):
+        """Verify an isolated speech frame followed by silence clears pending frames without leaking into buffer."""
+        tracker = SpeechTracker()
+
+        frame1 = np.ones(1600, dtype=np.float32) * 0.5
+        frame_silence = np.zeros(1600, dtype=np.float32)
+        frame2 = np.ones(1600, dtype=np.float32) * 0.6
+        frame3 = np.ones(1600, dtype=np.float32) * 0.7
+
+        # Frame 1: isolated speech frame
+        tracker.update(is_speech=True, frame=frame1)
+        assert len(tracker._pending_frames) == 1
+
+        # Interleaved silence: clears pending frames
+        tracker.update(is_speech=False, frame=frame_silence)
+        assert len(tracker._pending_frames) == 0
+
+        # New onset: Frame 2 and Frame 3
+        tracker.update(is_speech=True, frame=frame2)
+        assert len(tracker._pending_frames) == 1
+        tracker.update(is_speech=True, frame=frame3)
+        assert tracker.just_activated is True
+
+        pending = tracker.get_and_clear_pending_frames()
+        assert len(pending) == 2
+        assert np.array_equal(pending[0], frame2)
+        assert np.array_equal(pending[1], frame3)
+        # Frame 1 is NOT present
+        assert not any(np.array_equal(p, frame1) for p in pending)
+
+    def test_boult_audio_airbass_device_score_boost_input(self):
+        """Verify device selection score boost for Boult Audio Airbass input device."""
+        mock_devices = [
+            {"name": "Microsoft Sound Mapper - Input", "max_input_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+            {"name": "Realtek High Definition Audio Mic", "max_input_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+            {"name": "Boult Audio Airbass", "max_input_channels": 1, "default_samplerate": 16000, "hostapi": 0},
+        ]
+
+        with patch("sounddevice.query_devices", return_value=mock_devices), \
+             patch("sounddevice.default.device", [0, 0]):
+            best_id, best_name = find_best_input_device()
+            # Boult Audio Airbass keyword match boosts score by +600 points (over Realtek's +200 mic score)
+            assert best_id == 2
+            assert "Boult Audio Airbass" in best_name
+
+    def test_boult_audio_airbass_device_score_boost_output(self):
+        """Verify device selection score boost for Boult Audio Airbass output device."""
+        mock_devices = [
+            {"name": "Microsoft Sound Mapper - Output", "max_output_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+            {"name": "Realtek High Definition Audio Speaker", "max_output_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+            {"name": "Boult Audio Airbass", "max_output_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+        ]
+
+        with patch("sounddevice.query_devices", return_value=mock_devices), \
+             patch("sounddevice.default.device", [0, 0]):
+            best_id, best_name = find_best_output_device()
+            assert best_id == 2
+            assert "Boult Audio Airbass" in best_name
+

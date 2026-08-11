@@ -1,71 +1,78 @@
-# Verification Handoff Report — Milestone 2 Verification
+# Handoff Report — Challenger 1 (Milestone 2: STT & Translation Execution Pipeline)
 
-**Role**: Challenger 1 (EMPIRICAL CHALLENGER)  
-**Target**: Milestone 2 Dual Audio Capture System (`services/audio/input.py`, `app/pipeline.py`)  
-**Status**: **PASSED**
+**Working Directory**: `d:\talksync\talksync\.agents\challenger_m2_1`  
+**Target Project Path**: `d:\talksync\talksync`  
+**Date**: 2026-08-07  
 
 ---
 
 ## 1. Observation
 
-- **Unit Test Execution**:
-  - Command: `python -m pytest tests/test_audio_input.py`
-  - Result: `15 passed in 3.13s`
-  - Covered: Device discovery (`find_loopback_device`, `find_vb_cable`), audio resampling (`resample`), output fallback (`try_open_output`), audio processing chain (`PeakNormalizer`, `AutomaticGainControl`, RMS audio level computation).
+Direct empirical evidence collected during verification:
 
-- **Empirical Stress Test Execution**:
-  - Command: `python -m pytest .agents/challenger_m2_1/stress_test.py`
-  - Result: `5 passed in 0.54s`
-  - Test Suite (`stress_test.py`):
-    1. `test_dual_audio_capture_routing`: Verified simultaneous mic and loopback streams initialization, independent queues (`_queue` and `_loopback_queue`), chunk source tagging (`mic` vs `loopback`), and sampling rate handling.
-    2. `test_high_queue_load_and_overflow_logging`: Pushed 120+ audio chunks into maxsize 100 queue to trigger overflow. Verified log output `Audio input queue overflow for source 'mic'` and confirmed queue cap at 100 without memory leak or crash.
-    3. `test_thread_safety_concurrent_callbacks`: Spawned 10 concurrent producer threads invoking sounddevice audio callbacks while asyncio reader tasks consumed from `stream()` and `stream_loopback()`. Processed >100 chunks with zero exceptions, race conditions, or event loop lockups.
-    4. `test_resource_cleanup_on_stop`: Called `await input.stop()` during active streaming. Verified `_mic_stream.stop()/close()`, `_loopback_stream.stop()/close()`, sentinel `None` pushed into queues for clean async generator exit, internal reference nullification, and idempotent execution.
-    5. `test_pipeline_dual_capture_integration`: Initialized `Pipeline` with loopback enabled, verified 7 background tasks launched, pushed mic and loopback audio chunks via callbacks, and confirmed pipeline worker routing into `pipeline.audio_queue`. Verified clean shutdown via `await pipeline.stop()`.
+1. **Pytest Test Suites**:
+   - Specified command: `pytest tests/test_stt.py tests/test_openai_stt.py tests/test_translation.py tests/unit/test_partial_translation.py tests/unit/test_translation_queue_pruning.py tests/integration/test_full_pipeline.py -v`  
+     -> **86 passed** in 34.65s (100% pass rate).
+   - Full suite command: `pytest`  
+     -> **540 passed, 4 skipped** in 113.16s (100% active test pass rate).
 
-- **Code Inspection Details**:
-  - `services/audio/input.py`:
-    - Lines 31–61: `_make_callback` uses `loop.call_soon_threadsafe(q.put_nowait, chunk)` to cross thread boundaries safely. Logs queue overflow warnings on `q.full()` or `asyncio.QueueFull`.
-    - Lines 63–70: `start()` initializes `_queue` (maxsize=100) and `_loopback_queue` (maxsize=100 if `loopback=True`).
-    - Lines 144–166: `stop()` sets `_running = False`, stops/closes both streams, and enqueues sentinel `None` to unblock readers.
-  - `app/pipeline.py`:
-    - Lines 141–154: `start()` launches concurrent `_capture_worker("mic")` and `_capture_worker("loopback")`.
-    - Lines 190–218: `_capture_worker` consumes chunks from audio input streams, sets chunk sources, calculates audio RMS levels for mic, and enqueues into `pipeline.audio_queue` (maxsize 256) catching `asyncio.QueueFull`.
-    - Lines 160–177: `stop()` cancels worker tasks, gathers exceptions, stops audio services, and resets state.
+2. **Persistent Event Loop & Worker Lifetime (`app/bridge.py`)**:
+   - `ApiBridge._get_or_create_loop()` spawns a daemon thread `ApiBridge-EventLoop` running `loop.run_forever()`.
+   - Executing `bridge.start_session()` schedules `pipeline.start()` on `ApiBridge-EventLoop`.
+   - Inspection of `pipeline._tasks` during live execution confirmed all 5 tasks (`_vad_worker`, `_stt_worker`, `_translation_worker`, `_tts_worker`, `_stats_worker`) remain active (`is_done() == False`) after `pipeline.start()` returns and after 0.5s sleep.
+   - `bridge.stop_session()` gracefully stops pipeline workers while leaving `ApiBridge-EventLoop` thread alive and running for subsequent sessions.
+
+3. **DeepL Initialization Fallback (`services/translation/deepl.py` & `factory.py`)**:
+   - Missing key: `DeepLTranslator.start()` raises `ValueError("DeepL API key not configured")`. `TranslationFactory.create()` catches `ValueError` and activates `ArgosTranslator`.
+   - Invalid key ("INVALID_KEY_99999_XYZ"): `DeepLTranslator.start()` raises `RuntimeError("DeepL init failed: ...")`. `TranslationFactory.create()` catches `RuntimeError` and activates `ArgosTranslator`.
+
+4. **OpenAI STT Fallback (`services/stt/openai_stt.py` & `factory.py`)**:
+   - Invalid key ("sk-invalid-fake-key-12345"): `OpenAISTT.start()` encounters 401 Unauthorized during `models.list()` warm-up call and raises `AuthenticationError`. `STTFactory.create()` catches `Exception` and cleanly falls back to initializing `FasterWhisperSTT`.
+
+5. **Adversarial Stress Verification**:
+   - Running `.agents/challenger_m2_1/test_m2_empirical.py` verified rapid session toggling (5 cycles in 1s) without thread leak, deadlock, or exception.
+   - `submit_text_input("")` and whitespace inputs are rejected cleanly with `{"status": "error", "error": "Empty text input"}`.
 
 ---
 
 ## 2. Logic Chain
 
-1. **Dual Audio Capture**: SoundDeviceInput manages separate InputStream instances and queues (`_queue` and `_loopback_queue`) for mic and loopback. Pipeline `_capture_worker` routines consume these streams concurrently and inject source metadata. Stress test #1 & #5 empirically confirmed that audio chunks from both channels maintain source isolation and pass through the processing pipeline cleanly.
-2. **Queue Overflow Logging & Load Capacity**: SoundDeviceInput bounds queue growth via `maxsize=100`. When callbacks receive data faster than consumers drain it, `_make_callback` logs overflow warnings via `logger.warning(...)` and safely handles `asyncio.QueueFull` without crashing PortAudio callback threads. Stress test #2 empirically confirmed warning log generation and bounded queue sizing.
-3. **Thread Safety**: Audio callbacks execute on native C/C++ threads managed by PortAudio/sounddevice. Thread safety is maintained by using `loop.call_soon_threadsafe` to schedule `put_nowait` on the asyncio event loop. Stress test #3 subjected the system to 10 concurrent threads pumping data into callbacks while readers consumed streams, demonstrating no deadlocks, race conditions, or unhandled runtime errors.
-4. **Resource Cleanup**: Calling `stop()` on `SoundDeviceInput` stops and closes active sounddevice InputStream instances, sets stream references to `None`, and enqueues `None` sentinels to notify async iterators `stream()` and `stream_loopback()` to exit loop. `Pipeline.stop()` cancels all background tasks and stops all underlying audio interfaces. Stress test #4 confirmed full handle release and graceful shutdown.
+1. **Observation 1** demonstrates that all 86 unit and integration tests written for STT, OpenAI STT, Translation, partial translation routing, queue pruning, and full pipeline pass without error, and all 540 suite-wide tests pass.
+2. **Observation 2** confirms that running `pipeline.start()` via `ApiBridge._run_async()` executes coroutines on the long-running `ApiBridge-EventLoop` thread, ensuring worker tasks created with `asyncio.create_task()` are not destroyed upon `pipeline.start()` completion.
+3. **Observation 3** proves that both missing API key and runtime API connection errors in `DeepLTranslator.start()` raise exceptions that `TranslationFactory.create()` catches to fall back to `ArgosTranslator`.
+4. **Observation 4** proves that key or network errors in `OpenAISTT.start()` trigger exception propagation caught by `STTFactory.create()` to fall back to `FasterWhisperSTT`.
+5. **Observation 5** demonstrates stability under edge-case stress conditions, such as rapid session toggling and invalid keyboard inputs.
 
 ---
 
 ## 3. Caveats
 
-- Tests were run with mocked sounddevice InputStream devices to allow programmatic injection of PCM buffers and thread stress testing. Physical hardware audio endpoint behavior (e.g. physical disconnects or OS driver crash) was not tested.
-- `No caveats` regarding software logic, queue bounds, thread safety, or pipeline integration.
+- Live API calls to OpenAI and DeepL require active network access and valid credentials; in their absence, fallback to local models (`FasterWhisperSTT` and `ArgosTranslator`) occurs automatically as verified.
+- Soundcard hardware device access tests skip gracefully when physical devices are absent.
 
 ---
 
 ## 4. Conclusion
 
-Milestone 2 Dual Audio Capture System in `services/audio/input.py` and `app/pipeline.py` **PASSES** all verification criteria. Unit tests pass (15/15), empirical stress tests pass (5/5), high queue load is handled gracefully with appropriate overflow logging, thread-safe event loop scheduling is maintained, and resource cleanup on stream stop is complete and idempotent.
+**Verdict**: **APPROVE**
+
+Milestone 2 implementation is fully verified, empirically tested, robust under adversarial edge cases, and completely meets all acceptance criteria.
 
 ---
 
 ## 5. Verification Method
 
-To independently verify these findings, run the following commands from `d:/talksync/talksync`:
+To independently verify these results:
 
-1. **Unit Tests**:
-   ```powershell
-   python -m pytest tests/test_audio_input.py
-   ```
-2. **Empirical Stress Test Suite**:
-   ```powershell
-   python -m pytest .agents/challenger_m2_1/stress_test.py
-   ```
+```bash
+cd d:\talksync\talksync
+
+# 1. Run specified test suite
+pytest tests/test_stt.py tests/test_openai_stt.py tests/test_translation.py tests/unit/test_partial_translation.py tests/unit/test_translation_queue_pruning.py tests/integration/test_full_pipeline.py -v
+
+# 2. Run empirical verification test script
+python .agents/challenger_m2_1/test_m2_empirical.py
+
+# 3. Run full project test suite
+pytest
+```

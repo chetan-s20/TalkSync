@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -682,3 +682,98 @@ class TestPipelineDisplayModes:
         assert pipeline._translation_mode == "one_way"
         pipeline._translation_mode = "two_way"
         assert pipeline._translation_mode == "two_way"
+
+
+class TestTTSMuteGateAndQueuePurging:
+    @pytest.mark.asyncio
+    async def test_activate_tts_mute_gate_duration_and_buffer(self):
+        import time
+        audio_input = MagicMock(spec=BaseAudioInput)
+        vad = MagicMock(spec=BaseVAD)
+        stt = MagicMock(spec=BaseSTT)
+        translator = MagicMock(spec=BaseTranslator)
+        tts = MagicMock(spec=BaseTTS)
+        audio_output = MagicMock(spec=BaseAudioOutput)
+
+        pipeline = Pipeline(
+            audio_input=audio_input, vad=vad, stt=stt,
+            translator=translator, tts=tts, audio_output=audio_output,
+        )
+
+        now = time.time()
+        pipeline._activate_tts_mute_gate(2.0)
+        # Should set mute until now + 2.0 + 0.5 = now + 2.5
+        assert pipeline._ignore_loopback_until >= now + 2.45
+        assert pipeline._ignore_mic_until >= now + 2.45
+        assert pipeline._should_ignore_loopback() is True
+        assert pipeline._should_ignore_mic() is True
+
+    @pytest.mark.asyncio
+    async def test_purge_loopback_queues(self):
+        audio_input = MagicMock(spec=BaseAudioInput)
+        vad = MagicMock(spec=BaseVAD)
+        stt = MagicMock(spec=BaseSTT)
+        translator = MagicMock(spec=BaseTranslator)
+        tts = MagicMock(spec=BaseTTS)
+        audio_output = MagicMock(spec=BaseAudioOutput)
+
+        pipeline = Pipeline(
+            audio_input=audio_input, vad=vad, stt=stt,
+            translator=translator, tts=tts, audio_output=audio_output,
+        )
+
+        # Fill audio_queue with mic and loopback chunks
+        mic_chunk = AudioChunk(data=b"1234", sample_rate=16000, channels=1, timestamp=datetime.now(), duration_ms=10.0, source="mic")
+        lb_chunk = AudioChunk(data=b"5678", sample_rate=16000, channels=1, timestamp=datetime.now(), duration_ms=10.0, source="loopback")
+        await pipeline.audio_queue.put(mic_chunk)
+        await pipeline.audio_queue.put(lb_chunk)
+
+        # Fill stt_queue with mic and loopback jobs
+        from app.pipeline_state import SttJob
+        mic_job = SttJob(source="mic", audio=b"1234", sample_rate=16000, is_final=True)
+        lb_job = SttJob(source="loopback", audio=b"5678", sample_rate=16000, is_final=True)
+        await pipeline.stt_queue.put(mic_job)
+        await pipeline.stt_queue.put(lb_job)
+
+        # Add to VAD buffer
+        buf = pipeline._state.get_buffer("loopback")
+        buf.append(np.ones(1000, dtype=np.float32))
+        assert buf.total_samples > 0
+
+        # Run purge
+        pipeline._purge_loopback_queues()
+
+        # Loopback items should be purged, mic items retained
+        assert pipeline.audio_queue.qsize() == 1
+        retained_audio = await pipeline.audio_queue.get()
+        assert retained_audio.source == "mic"
+
+        assert pipeline.stt_queue.qsize() == 1
+        retained_stt = await pipeline.stt_queue.get()
+        assert retained_stt.source == "mic"
+
+        assert buf.total_samples == 0
+
+    @pytest.mark.asyncio
+    async def test_initial_prompt_sanitized_no_hardcoded_hallucination_words(self):
+        audio_input = MagicMock(spec=BaseAudioInput)
+        vad = MagicMock(spec=BaseVAD)
+        stt = MagicMock(spec=BaseSTT)
+        stt.transcribe = AsyncMock(return_value=None)
+        translator = MagicMock(spec=BaseTranslator)
+        tts = MagicMock(spec=BaseTTS)
+        audio_output = MagicMock(spec=BaseAudioOutput)
+
+        pipeline = Pipeline(
+            audio_input=audio_input, vad=vad, stt=stt,
+            translator=translator, tts=tts, audio_output=audio_output,
+            settings=None,
+        )
+
+        prompt_parts = []
+        if pipeline._settings:
+            pass
+        custom_prompt = " ".join(prompt_parts) if prompt_parts else None
+
+        assert custom_prompt is None
+

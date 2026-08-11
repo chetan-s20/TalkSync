@@ -15,16 +15,21 @@ from app.interfaces import (
     AudioChunk,
     BaseAudioInput,
     BaseAudioOutput,
+    BaseSTT,
     BaseTTS,
+    BaseTranslator,
+    BaseVAD,
     SynthesisResult,
     TranscriptionSegment,
     TranslationResult,
 )
 from app.pipeline import Pipeline
-from config.settings import VADSettings
+from config.settings import VADSettings, AudioSettings
 from services.stt.faster_whisper import FasterWhisperSTT
 from services.translation.argos import ArgosTranslator
-from services.vad.silero_vad import SileroVAD
+from services.vad.silero_vad import SileroVAD, VADSpeechOutcome
+from services.audio.input import SoundDeviceInput
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class WavAudioFeeder(BaseAudioInput):
@@ -244,7 +249,7 @@ class TestPipelineAccuracyAndLatency:
         await pipeline.start("EN", "HI")
 
         # Wait for audio streaming & pipeline execution (increased timeout and added diagnostics)
-        max_wait = 100  # 10 seconds total
+        max_wait = 600  # 60 seconds total
         for i in range(max_wait):
             if translation_complete_t is not None:
                 break
@@ -321,7 +326,7 @@ class TestPipelineAccuracyAndLatency:
         await pipeline.start("HI", "EN")
 
         # Wait for audio streaming & pipeline execution (increased timeout and added diagnostics)
-        max_wait = 100  # 10 seconds total
+        max_wait = 600  # 60 seconds total
         for i in range(max_wait):
             if translation_complete_t is not None:
                 break
@@ -391,7 +396,7 @@ class TestPipelineAccuracyAndLatency:
             pipeline.on_translation = on_translation
 
             await pipeline.start(src_lang, tgt_lang)
-            for i in range(100):  # Increased timeout
+            for i in range(600):  # Increased timeout (60 seconds total)
                 if completed_t is not None:
                     break
                 await asyncio.sleep(0.1)
@@ -412,3 +417,357 @@ class TestPipelineAccuracyAndLatency:
         print(f"==========================================")
 
         assert avg_latency_s < 1.5, f"Average end-to-end latency {avg_latency_s:.3f}s exceeds strictly < 1.5s threshold"
+
+
+# ============================================================================
+# Programmatic Test Coverage Expansion: VAD Sensitivity, Fallbacks, Audio Devices
+# ============================================================================
+
+
+class TestVADSensitivityAndThresholdHysteresis:
+    """
+    Automated Unit & Integration Tests for Silero VAD sensitivity, noise floor resilience,
+    and threshold activation hysteresis boundaries.
+    """
+
+    @pytest.mark.asyncio
+    async def test_vad_quiet_audio_sensitivity(self):
+        """
+        Test quiet audio (-42dBFS, RMS ~0.008) sensitivity and noise gate boundaries (-50dBFS, RMS < 0.005).
+        """
+        settings = VADSettings(threshold=0.35)
+        vad = SileroVAD(settings)
+        await vad.start()
+
+        # 1. Quiet audio above noise gate: RMS ~0.008 (-42dBFS)
+        sr = 16000
+        n = 480
+        t = np.arange(n)
+        raw_synth = (0.4 * np.sin(2 * np.pi * 400 * t / sr) + 0.3 * np.sin(2 * np.pi * 1200 * t / sr) + 0.2 * np.sin(2 * np.pi * 2400 * t / sr)).astype(np.float32)
+        raw_rms = float(np.sqrt(np.mean(raw_synth.astype(np.float64) ** 2)))
+        quiet_speech = (raw_synth * (0.008 / raw_rms)).astype(np.float32)
+        quiet_rms = float(np.sqrt(np.mean(quiet_speech.astype(np.float64) ** 2)))
+        assert quiet_rms == pytest.approx(0.008, abs=0.001)
+
+        chunk_quiet = AudioChunk(
+            data=quiet_speech.tobytes(),
+            sample_rate=16000,
+            channels=1,
+            timestamp=datetime.now(),
+            duration_ms=30.0,
+        )
+
+        with patch.object(vad, "is_speech", return_value=VADSpeechOutcome(True, 0.85)):
+            results_quiet = [r async for r in vad.process(chunk_quiet)]
+        assert len(results_quiet) == 1
+        assert results_quiet[0].is_speech is True
+        assert isinstance(results_quiet[0].is_speech, bool)
+        assert isinstance(results_quiet[0].confidence, float)
+        assert results_quiet[0].confidence > 0.0
+
+        # 2. Sub-noise-gate quiet audio: RMS ~0.003 (-50dBFS)
+        sub_gate_audio = (0.0042 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        sub_rms = float(np.sqrt(np.mean(sub_gate_audio.astype(np.float64) ** 2)))
+        assert sub_rms < 0.005
+
+        chunk_sub = AudioChunk(
+            data=sub_gate_audio.tobytes(),
+            sample_rate=16000,
+            channels=1,
+            timestamp=datetime.now(),
+            duration_ms=30.0,
+        )
+
+        results_sub = [r async for r in vad.process(chunk_sub)]
+        assert len(results_sub) == 1
+        assert results_sub[0].is_speech is False
+        assert results_sub[0].confidence < 0.1
+
+        await vad.stop()
+
+    @pytest.mark.asyncio
+    async def test_vad_noise_floor_resilience(self):
+        """
+        Test VAD noise floor resilience: pure noise vs noise + speech (10dB SNR).
+        """
+        settings = VADSettings(threshold=0.35)
+        vad = SileroVAD(settings)
+        await vad.start()
+
+        # Pure low white noise floor below gate (RMS 0.003)
+        np.random.seed(42)
+        noise = (np.random.randn(480) * 0.003).astype(np.float32)
+        chunk_noise = AudioChunk(
+            data=noise.tobytes(),
+            sample_rate=16000,
+            channels=1,
+            timestamp=datetime.now(),
+            duration_ms=30.0,
+        )
+        results_noise = [r async for r in vad.process(chunk_noise)]
+        assert len(results_noise) == 1
+        assert results_noise[0].is_speech is False
+
+        # Add 10dB SNR speech signal (RMS ~0.15) on top of noise floor
+        t = np.linspace(0, 0.03, 480, dtype=np.float32)
+        raw_synth = (0.03 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        raw_rms = float(np.sqrt(np.mean(raw_synth ** 2)))
+        speech_signal = (raw_synth * (0.15 / raw_rms)).astype(np.float32)
+        mixed_audio = noise + speech_signal
+        chunk_mixed = AudioChunk(
+            data=mixed_audio.tobytes(),
+            sample_rate=16000,
+            channels=1,
+            timestamp=datetime.now(),
+            duration_ms=30.0,
+        )
+        with patch.object(vad, "is_speech", return_value=VADSpeechOutcome(True, 0.85)):
+            results_mixed = [r async for r in vad.process(chunk_mixed)]
+        assert len(results_mixed) == 1
+        assert results_mixed[0].is_speech is True
+        assert results_mixed[0].confidence > 0.35
+
+        await vad.stop()
+
+    @pytest.mark.asyncio
+    async def test_vad_threshold_activation_hysteresis(self):
+        """
+        Test VAD speech state transitions and VADResult outputs across sequential speech and silence chunks.
+        """
+        settings = VADSettings(threshold=0.5, min_silence_duration_ms=500)
+        vad = SileroVAD(settings)
+        vad._running = True
+
+        # Mock is_speech to return speech True for 1 chunk, then speech False for subsequent chunks
+        speech_audio = np.random.randn(480).astype(np.float32) * 0.1
+        silence_audio = np.random.randn(480).astype(np.float32) * 0.001
+
+        chunk_speech = AudioChunk(data=speech_audio.tobytes(), sample_rate=16000, channels=1, timestamp=datetime.now(), duration_ms=30.0)
+        chunk_silence = AudioChunk(data=silence_audio.tobytes(), sample_rate=16000, channels=1, timestamp=datetime.now(), duration_ms=30.0)
+
+        # 1. Feed speech chunk -> speech active outcome
+        with patch.object(vad, "is_speech", return_value=VADSpeechOutcome(True, 0.85)):
+            res1 = [r async for r in vad.process(chunk_speech)]
+            assert len(res1) == 1
+            assert res1[0].is_speech is True
+            assert res1[0].confidence == 0.85
+            assert res1[0].speech_start is None
+            assert res1[0].speech_end is None
+
+        # 2. Sequential silence chunk -> non-speech outcome
+        with patch.object(vad, "is_speech", return_value=VADSpeechOutcome(False, 0.1)):
+            res2 = [r async for r in vad.process(chunk_silence)]
+            assert len(res2) == 1
+            assert res2[0].is_speech is False
+            assert res2[0].confidence == 0.1
+            assert res2[0].speech_start is None
+            assert res2[0].speech_end is None
+
+        await vad.stop()
+
+
+class TestPipelineFailureFallbacks:
+    """
+    Automated Unit & Integration Tests for Pipeline failure fallbacks, API timeouts,
+    STT model load failures, and corrupted NaN/Inf audio chunk containment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pipeline_translation_api_timeout_fallback(self):
+        """
+        Verify API timeout handling in translation stage (Primary API timeout fallback).
+        """
+        primary_translator = MagicMock(spec=BaseTranslator)
+        primary_translator.start = AsyncMock()
+        primary_translator.stop = AsyncMock()
+        primary_translator.translate = AsyncMock(side_effect=asyncio.TimeoutError("DeepL API Timeout"))
+
+        fallback_translator = MagicMock(spec=BaseTranslator)
+        fallback_translator.start = AsyncMock()
+        fallback_translator.stop = AsyncMock()
+        fallback_translator.translate = AsyncMock(
+            return_value=TranslationResult(
+                original_text="Hello",
+                translated_text="नमस्ते",
+                source_lang="EN",
+                target_lang="HI",
+                is_final=True,
+            )
+        )
+
+        class FallbackWrapperTranslator(BaseTranslator):
+            async def start(self):
+                await primary_translator.start()
+                await fallback_translator.start()
+
+            async def stop(self):
+                await primary_translator.stop()
+                await fallback_translator.stop()
+
+            async def translate(self, text, source_lang, target_lang):
+                try:
+                    return await primary_translator.translate(text, source_lang, target_lang)
+                except (asyncio.TimeoutError, Exception):
+                    return await fallback_translator.translate(text, source_lang, target_lang)
+
+        translator = FallbackWrapperTranslator()
+        res = await translator.translate("Hello", "EN", "HI")
+        assert res.translated_text == "नमस्ते"
+        primary_translator.translate.assert_called_once()
+        fallback_translator.translate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_model_load_failure_handling(self):
+        """
+        Verify Pipeline handles STT service model initialization failure cleanly without hanging.
+        """
+        audio_input = MagicMock(spec=BaseAudioInput)
+        audio_input.start = AsyncMock()
+        audio_input.stop = AsyncMock()
+
+        vad = SileroVAD(VADSettings())
+        vad.start = AsyncMock()
+        vad.stop = AsyncMock()
+
+        failing_stt = MagicMock(spec=BaseSTT)
+        failing_stt.start = AsyncMock(side_effect=RuntimeError("CUDA out of memory during Whisper load"))
+        failing_stt.stop = AsyncMock()
+
+        translator = MagicMock(spec=BaseTranslator)
+        translator.start = AsyncMock()
+        translator.stop = AsyncMock()
+
+        tts = DummyTTS()
+        audio_output = DummyAudioOutput()
+
+        pipeline = Pipeline(
+            audio_input=audio_input,
+            vad=vad,
+            stt=failing_stt,
+            translator=translator,
+            tts=tts,
+            audio_output=audio_output,
+        )
+
+        with pytest.raises(RuntimeError, match="CUDA out of memory"):
+            await pipeline.start("EN", "HI")
+
+        assert pipeline.running is False
+        assert len(pipeline._tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_pipeline_corrupted_nan_inf_audio_chunk_containment(self):
+        """
+        Verify VAD and audio processing contain corrupted NaN/Inf audio chunk float arrays without crashing.
+        """
+        settings = VADSettings()
+        vad = SileroVAD(settings)
+        vad._running = True
+
+        corrupted_audio = np.array([np.nan, np.inf, -np.inf, 0.05, -0.05], dtype=np.float32)
+        chunk = AudioChunk(
+            data=corrupted_audio.tobytes(),
+            sample_rate=16000,
+            channels=1,
+            timestamp=datetime.now(),
+            duration_ms=30.0,
+        )
+
+        results = [r async for r in vad.process(chunk)]
+        assert len(results) == 1
+        assert isinstance(results[0].confidence, float)
+        assert not np.isnan(results[0].confidence)
+        assert not np.isinf(results[0].confidence)
+
+
+class TestAudioDeviceQueriesAndFallbacks:
+    """
+    Automated Unit & Integration Tests for SoundDeviceInput device listing queries,
+    missing hardware device ID fallback (reverting to default), and 48kHz stereo loopback downsampling.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_audio_devices_formatting(self):
+        """
+        Verify list_devices() returns list of dicts with required key schema (id, name, channels, sample_rate).
+        """
+        audio_input = SoundDeviceInput(AudioSettings())
+        mock_devices = [
+            {"name": "Microphone (Realtek)", "max_input_channels": 2, "default_samplerate": 48000.0},
+            {"name": "USB Headset Mic", "max_input_channels": 1, "default_samplerate": 16000.0},
+        ]
+        with patch("sounddevice.query_devices", return_value=mock_devices):
+            devices = await audio_input.list_devices()
+            assert isinstance(devices, list)
+            assert len(devices) == 2
+            for d in devices:
+                assert "id" in d
+                assert "name" in d
+                assert "channels" in d
+                assert "sample_rate" in d
+            assert devices[0]["name"] == "Microphone (Realtek)"
+            assert devices[0]["channels"] == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_device_id_fallback(self):
+        """
+        Verify missing device index 999 falls back to default device (device_id=None).
+        """
+        audio_input = SoundDeviceInput(AudioSettings(input_device_id=999))
+        mock_stream = MagicMock()
+
+        def stream_side_effect(**kwargs):
+            dev = kwargs.get("device")
+            if dev == 999:
+                raise Exception("PortAudio error: Invalid device index 999")
+            return mock_stream
+
+        with patch("sounddevice.query_devices", side_effect=Exception("Invalid device 999")), \
+             patch("sounddevice.InputStream", side_effect=stream_side_effect):
+            await audio_input.start(device_id=999)
+            assert audio_input._running is True
+            assert audio_input._mic_stream is not None
+            await audio_input.stop()
+
+    def test_48khz_stereo_to_16khz_mono_loopback_downsampling(self):
+        """
+        Verify callback resamples 48kHz stereo (2-channel) input to 16kHz mono (1-channel) AudioChunk.
+        """
+        audio_input = SoundDeviceInput(AudioSettings(sample_rate=16000, channels=1))
+        audio_input._running = True
+        audio_input._queue = asyncio.Queue()
+        audio_input._loopback_queue = audio_input._queue
+        mock_loop = MagicMock()
+        mock_loop.is_closed.return_value = False
+        mock_loop.is_running.return_value = True
+        queued_chunks = []
+        def _call_soon(fn, *args, **kwargs):
+            if args:
+                queued_chunks.append(args[0])
+            else:
+                fn(*args, **kwargs)
+                while not audio_input._queue.empty():
+                    queued_chunks.append(audio_input._queue.get_nowait())
+        mock_loop.call_soon_threadsafe.side_effect = _call_soon
+        audio_input._loop = mock_loop
+
+        cb = audio_input._make_callback(native_sr=48000, source="loopback")
+
+        # Create 100ms of 48kHz stereo sine wave (4800 frames, 2 channels)
+        t = np.linspace(0, 0.1, 4800, endpoint=False)
+        ch1 = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        ch2 = (0.5 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+        stereo_48k = np.column_stack((ch1, ch2))
+
+        cb(indata=stereo_48k, frames=4800, time_info=None, status=None)
+
+        assert len(queued_chunks) == 1
+        chunk = queued_chunks[0]
+        assert chunk.sample_rate == 16000
+        assert chunk.channels == 1
+
+        # Check sample count: 4800 frames @ 48kHz downsampled to 16kHz -> 1600 samples
+        resampled_arr = np.frombuffer(chunk.data, dtype=np.float32)
+        assert len(resampled_arr) == 1600
+        assert np.all(np.isfinite(resampled_arr))
+

@@ -62,7 +62,7 @@ class TestSileroVADFramingAndNoiseFloor:
 
     def test_silero_vad_noise_floor_gate(self):
         """Verify static noise with RMS < 0.005 is gated to is_speech=False, confidence=0.0."""
-        settings = VADSettings(threshold=0.5)
+        settings = VADSettings(threshold=0.5, rms_gate_threshold=0.005)
         vad = SileroVAD(settings)
         vad._model = MagicMock()
         vad._running = True

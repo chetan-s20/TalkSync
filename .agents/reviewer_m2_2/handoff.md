@@ -1,65 +1,49 @@
-# Reviewer 2 Handoff Report - Milestone 2 Verification
+# Handoff Report — Reviewer 2 (Milestone 2: STT & Translation Execution Pipeline)
+
+**Working Directory**: `d:\talksync\talksync\.agents\reviewer_m2_2`  
+**Target Path**: `d:\talksync\talksync`  
+**Date**: 2026-08-07  
+**Verdict**: **APPROVE**  
+
+---
 
 ## 1. Observation
 
-### Source Code Examination
-- **`app/pipeline.py`**:
-  - `_capture_worker(source)` (lines 190-218): Assigns `chunk.source = source` ("mic" or "loopback") when reading audio chunks.
-  - `_vad_worker()` (lines 219-255): Tracks audio buffers per source using `self._state.get_buffer(chunk.source)`. When speech completes or buffer fills, emits `SttJob` preserving `job.source`.
-  - `_stt_worker()` (lines 256-316): Translates internal `job.source` to `input_src = "COMPUTER_AUDIO"` if `job.source == "loopback"` else `"VOICE"`. Attaches `input_source` to `TranscriptionSegment` and `TranslationResult`. Emits `on_transcription(result)`.
-  - `_translation_worker()` & `_translate_and_route()` (lines 318-425): Checks `if segment.input_source and segment.input_source.upper() in ("COMPUTER_AUDIO", "LOOPBACK")`. Automatically swaps translation direction to `src = target_lang` and `tgt = source_lang` for remote system loopback audio. Emits `on_translation(result)`.
-  - `process_text_input()` (lines 498-520): Emits `TranscriptionSegment` with `input_source="TEXT"`.
+1. **Persistent Event Loop Thread (`app/bridge.py`)**:
+   - `_get_or_create_loop()` spawns a long-lived background daemon thread named `ApiBridge-EventLoop` running `loop.run_forever()`.
+   - `_run_async` schedules coroutines via `asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=15.0)` without creating or destroying temporary loops during active sessions.
+   - `close()` and `stop_session()` gracefully stop active pipeline tasks without terminating the background loop.
 
-- **`ui/main_window.py`**:
-  - `_build_main_content()` (lines 211-242): Instantiates `self.panel_a` (Left Card - Local Speaker) and `self.panel_b` (Right Card - Remote Speaker).
-  - `_on_transcription(segment)` (lines 460-466):
-    ```python
-    src = str(getattr(segment, "input_source", "VOICE")).upper()
-    if src in ("LOOPBACK", "COMPUTER_AUDIO"):
-        self.after(0, lambda: self.panel_b.update_streaming_text(original=text))
-    else:
-        self.after(0, lambda: self.panel_a.update_streaming_text(original=text))
-    ```
-  - `_on_translation(result)` (lines 468-477):
-    ```python
-    src = str(getattr(result, "input_source", "VOICE")).upper()
-    if src in ("LOOPBACK", "COMPUTER_AUDIO"):
-        self.after(0, lambda: self.panel_b.append_message(original=orig, translated=trans, input_source=src))
-    else:
-        self.after(0, lambda: self.panel_a.append_message(original=orig, translated=trans, input_source=src))
-    ```
-  - Safe GUI updates: Uses `self.after(0, ...)` for cross-thread Tkinter updates.
+2. **DeepL Exception Propagation & Fallback (`services/translation/deepl.py` & `factory.py`)**:
+   - `DeepLTranslator.start()` raises `ValueError("DeepL API key not configured")` when `deepl_api_key` is empty, and `RuntimeError(f"DeepL init failed: {e}")` on network or credential failures.
+   - `TranslationFactory.create()` catches these exceptions and falls back cleanly to `ArgosTranslator` (and `DummyTranslator` if necessary).
 
-- **`ui/widgets/transcript_panel.py`**:
-  - `append_message()` (lines 166-197): Formats badge based on `input_source`: `[MIC]` for mic voice, `[LOOPBACK]` for system audio, `[TEXT]` for text input.
+3. **STT Engine Factory & OpenAI STT Fallback (`services/stt/factory.py`, `services/stt/openai_stt.py`, `app/application.py`)**:
+   - `STTFactory.create()` attempts `OpenAISTT` startup when configured with an API key, catching failures to fall back cleanly to `FasterWhisperSTT`.
+   - `OpenAISTT.start()` is idempotent.
+   - `app/application.py` uses `STTFactory.create()` and `TranslationFactory.create()` with threadsafe event loop scheduling.
 
-### Test Execution Results
-- Executed `python -m pytest tests/integration/test_full_pipeline.py tests/test_pipeline.py` in `d:/talksync/talksync`.
-- Command Result: `39 passed, 4 warnings in 2.69s`.
-- Integrity Check: Verified that no test results or expected outputs are hardcoded in source files, and no facade implementations bypass core pipeline logic.
+4. **Test Suite Results**:
+   - Specified test suite (`pytest tests/test_stt.py tests/test_openai_stt.py tests/test_translation.py tests/unit/test_partial_translation.py tests/unit/test_translation_queue_pruning.py tests/integration/test_full_pipeline.py -v`) executed and passed: **86 passed, 0 failed** in 32.44s.
+   - Full test suite passed: **540 passed, 4 skipped**.
+
+5. **Integrity Violations Audit**:
+   - No hardcoded test outputs, dummy facades bypassing core logic, or self-certifying shortcuts were found.
 
 ---
 
 ## 2. Logic Chain
 
-1. **Audio Tagging Continuity**:
-   Audio chunks captured from mic or loopback receive distinct `source` labels (`"mic"` vs `"loopback"`). These tags are propagated through VAD buffering (`SttJob.source`), STT processing (`input_source = "COMPUTER_AUDIO"` / `"VOICE"`), and translation segment creation without loss or ambiguity.
-
-2. **Directional Translation Logic**:
-   Remote speaker audio (system audio loopback) represents the foreign speaker whose speech is in `target_lang`. `_translate_and_route()` correctly flips `src` to `target_lang` and `tgt` to `source_lang` for `"COMPUTER_AUDIO"` / `"LOOPBACK"` input sources, whereas local mic and text inputs retain standard `source_lang` → `target_lang` translation.
-
-3. **Panel Dispatch**:
-   `MainWindow._on_transcription` and `_on_translation` inspect `input_source`. Loopback signals are dispatched to `Panel B` (Remote Speaker), while microphone speech and typed text inputs are dispatched to `Panel A` (Local Speaker).
-
-4. **UI Thread Safety**:
-   All pipeline callback handlers in `MainWindow` wrap GUI updates in `self.after(0, ...)`, preventing thread collision between background asyncio pipeline workers and the main CustomTkinter GUI loop.
+1. **Persistent Event Loop Lifecycle**: In PyWebView desktop applications, API bridge methods are called from pywebview thread pools. Standard `asyncio.run()` creates and closes temporary loops, destroying attached background worker tasks. By managing a persistent daemon thread running `loop.run_forever()`, long-running pipeline worker tasks (`_vad_worker`, `_stt_worker`, `_translation_worker`) survive across bridge calls.
+2. **Exception Propagation for Fallbacks**: `TranslationFactory` and `STTFactory` rely on engine `.start()` throwing exceptions upon failure. Explicitly raising `ValueError` / `RuntimeError` on missing API keys or failed client initializations triggers `try...except` branches in factories, ensuring seamless fallback to local engines (`ArgosTranslator` and `FasterWhisperSTT`).
+3. **Verification**: Executing the comprehensive test suite confirms all interface contracts, fallback chains, partial translation handling, queue pruning, and end-to-end pipeline execution operate correctly under test conditions.
 
 ---
 
 ## 3. Caveats
 
-- System audio loopback capture in real environment requires OS-level virtual audio loopback drivers (e.g. WASAPI loopback on Windows). Pipeline code correctly interfaces with loopback streams when enabled.
-- Unit tests use standard asyncio mocks for audio interfaces, STT, and translator services; real live audio card testing is outside automated pytest scope.
+- In `app/application.py`, invoking `build_pipeline()` outside an active event loop causes `STTFactory.create` and `TranslationFactory.create` to run under `asyncio.run()`, closing the temporary loop after startup. While safe in current tests, initializing services directly inside `pipeline.start()` (which runs on `ApiBridge-EventLoop`) is recommended for future hardening in M3/M4.
+- Live cloud STT and translation require valid `OPENAI_API_KEY` and `DEEPL_API_KEY`. When keys are absent or network is disconnected, fallback to local models operates cleanly as expected.
 
 ---
 
@@ -67,24 +51,22 @@
 
 **Verdict**: **APPROVE**
 
-- Pipeline routing and panel dispatch are correctly implemented.
-- System audio loopback translations are properly routed to Panel B (remote speaker), and mic/text speech inputs are properly routed to Panel A (local speaker).
-- No integrity violations, dummy implementations, or shortcuts were found.
-- Test suite execution (`tests/integration/test_full_pipeline.py` and `tests/test_pipeline.py`) passed 100% (39/39 tests).
+Milestone 2 implementation satisfies all functional and non-functional requirements in `PROJECT.md` and `ORIGINAL_REQUEST.md`. Code quality, async lifecycle safety, and exception handling are verified. All 86 specified tests pass.
 
 ---
 
 ## 5. Verification Method
 
-To independently verify this assessment:
+To independently verify the results:
 
-1. **Run Pytest**:
-   ```powershell
-   cd d:/talksync/talksync
-   python -m pytest tests/integration/test_full_pipeline.py tests/test_pipeline.py
-   ```
-   Expect 39 passing tests.
+```powershell
+cd d:\talksync\talksync
 
-2. **Inspect Pipeline Source Tagging & Routing**:
-   - Inspect `d:/talksync/talksync/app/pipeline.py` lines 277-278 & 340-345.
-   - Inspect `d:/talksync/talksync/ui/main_window.py` lines 463-466 & 471-474.
+# 1. Run Milestone 2 specific test suite
+python -m pytest tests/test_stt.py tests/test_openai_stt.py tests/test_translation.py tests/unit/test_partial_translation.py tests/unit/test_translation_queue_pruning.py tests/integration/test_full_pipeline.py -v
+
+# 2. Run full test suite
+python -m pytest
+```
+
+Inspect review details in: `d:\talksync\talksync\.agents\reviewer_m2_2\analysis.md`
